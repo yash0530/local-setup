@@ -24,23 +24,27 @@ Config constants are at the top of `claude_resume_daemon.py`:
 It's already installed and running under launchd (label `com.user.clauderesume`). Nothing to do
 day-to-day — leave your Claude Code tabs open; blocked ones resume themselves after reset.
 
-**From Claude Code:** `/resume-daemon start|stop|restart|status|logs` — a personal slash command
-(`~/.claude/commands/resume-daemon.md`) that runs the `launchctl` calls below for you.
+Run it globally from your terminal: `claude-resume [start|stop|restart|status|logs|install|uninstall]`
 
 ```bash
-# status / health
-pgrep -f claude_resume_daemon.py                 # is it running? (prints PID)
-launchctl list | grep clauderesume               # launchd state
-tail -f ~/.claude/claude_resume_daemon.log       # watch it work
+# check status
+claude-resume status
 
-# restart after editing the script
-launchctl kickstart -k gui/$(id -u)/com.user.clauderesume
+# view logs
+claude-resume logs
 
-# stop until next login / fully disable / re-enable
-launchctl bootout   gui/$(id -u)/com.user.clauderesume                                  # stop now
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.user.clauderesume.plist     # start again
-python3 ~/.claude/claude_resume_daemon.py uninstall   # remove the launchd job entirely
-python3 ~/.claude/claude_resume_daemon.py install     # reinstall it
+# stop the daemon
+claude-resume stop
+
+# start it back up
+claude-resume start
+
+# restart it (e.g. after updating the script)
+claude-resume restart
+
+# fully install / uninstall the launchd plist
+claude-resume install
+claude-resume uninstall
 ```
 
 ## Log lines you'll see

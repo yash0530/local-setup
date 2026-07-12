@@ -7,8 +7,8 @@ alias claude="claude --dangerously-skip-permissions"
 alias agy="agy --dangerously-skip-permissions"
 
 # Claude Code Auto-Resume Daemon
-alias claude_resume="python3 ~/.claude/claude_resume_daemon.py"
-alias claude_resume_logs="tail -f ~/.claude/claude_resume_daemon.log"
+alias claude_resume="claude-resume"
+alias claude_resume_logs="claude-resume logs"
 
 # Local Llama Server aliases (8-bit quants with speculative MTP)
 alias serve_qwen_36_27b="llama-server -m ~/Models/qwen3.6-27b-mtp-q8/Qwen3.6-27B-Q8_0.gguf --spec-type draft-mtp --spec-draft-n-max 2 -c 16384 -ngl 99 -fa on -np 1 --jinja --reasoning-format deepseek --temp 0.6 --top-p 0.95 --top-k 20 --host 127.0.0.1 --port 8089"

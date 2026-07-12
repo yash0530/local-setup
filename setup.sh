@@ -28,15 +28,27 @@ mkdir -p "$CLAUDE_DIR/plugins" \
 echo "Installing settings, plugins, skills, and commands..."
 cp "$REPO_DIR/dotfiles/settings.json" "$CLAUDE_DIR/settings.json"
 
-# Use cp -R to copy the plugins and skills directories
-cp -R "$REPO_DIR/claude_plugins/plugins/"* "$CLAUDE_DIR/plugins/"
-cp -R "$REPO_DIR/claude_plugins/skills/"* "$CLAUDE_DIR/skills/"
-cp -R "$REPO_DIR/claude_plugins/commands/"* "$CLAUDE_DIR/commands/"
+# Use cp -R to copy the plugins, skills, and commands directories safely if they are not empty
+if [ -d "$REPO_DIR/claude_plugins/plugins" ] && [ "$(ls -A "$REPO_DIR/claude_plugins/plugins")" ]; then
+  cp -R "$REPO_DIR/claude_plugins/plugins/"* "$CLAUDE_DIR/plugins/"
+fi
+if [ -d "$REPO_DIR/claude_plugins/skills" ] && [ "$(ls -A "$REPO_DIR/claude_plugins/skills")" ]; then
+  cp -R "$REPO_DIR/claude_plugins/skills/"* "$CLAUDE_DIR/skills/"
+fi
+if [ -d "$REPO_DIR/claude_plugins/commands" ] && [ "$(ls -A "$REPO_DIR/claude_plugins/commands")" ]; then
+  cp -R "$REPO_DIR/claude_plugins/commands/"* "$CLAUDE_DIR/commands/"
+fi
 
-# 4. Copy the Auto-Resume Daemon script and install it via launchd
+# 4. Copy the Auto-Resume Daemon script, install CLI, and configure via launchd
 echo "Installing Claude Auto-Resume Daemon..."
 cp "$REPO_DIR/scripts/claude_resume_daemon.py" "$CLAUDE_DIR/claude_resume_daemon.py"
 cp "$REPO_DIR/scripts/claude_resume_daemon.README.md" "$CLAUDE_DIR/claude_resume_daemon.README.md"
+
+# Install global cli wrapper
+echo "Installing claude-resume command..."
+mkdir -p "$HOME/.local/bin"
+cp "$REPO_DIR/scripts/claude-resume" "$HOME/.local/bin/claude-resume"
+chmod +x "$HOME/.local/bin/claude-resume"
 
 # Run the daemon installation
 python3 "$CLAUDE_DIR/claude_resume_daemon.py" install

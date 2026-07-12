@@ -73,8 +73,8 @@ alias sleep_ok="sudo pmset -a disablesleep 0"  # Enable sleep
 
 ### 3.3 Auto-Resume Daemon Controls
 ```bash
-alias claude_resume="python3 ~/.claude/claude_resume_daemon.py"
-alias claude_resume_logs="tail -f ~/.claude/claude_resume_daemon.log"
+alias claude_resume="claude-resume"
+alias claude_resume_logs="claude-resume logs"
 ```
 
 ---
@@ -87,9 +87,9 @@ The auto-resume daemon runs silently in the background via `launchd` (`com.user.
 - **Controls**:
   ```bash
   # Check status
-  claude_resume status
+  claude-resume status
   # Restart daemon
-  launchctl kickstart -k gui/$(id -u)/com.user.clauderesume
+  claude-resume restart
   ```
 
 ---

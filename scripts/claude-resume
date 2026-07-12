@@ -1,0 +1,53 @@
+#!/bin/bash
+
+# Get the action
+ACTION="${1:-status}"
+
+case "$ACTION" in
+    start)
+        echo "Starting Claude Auto-Resume Daemon..."
+        launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.user.clauderesume.plist 2>/dev/null
+        launchctl kickstart gui/$(id -u)/com.user.clauderesume
+        ;;
+    stop)
+        echo "Stopping Claude Auto-Resume Daemon..."
+        launchctl bootout gui/$(id -u)/com.user.clauderesume 2>/dev/null
+        ;;
+    restart)
+        echo "Restarting Claude Auto-Resume Daemon..."
+        launchctl kickstart -k gui/$(id -u)/com.user.clauderesume
+        ;;
+    status)
+        echo "--- Daemon Status ---"
+        PID=$(pgrep -f claude_resume_daemon.py | head -n 1)
+        if [ -n "$PID" ]; then
+            echo "Python daemon process: RUNNING (PID: $PID)"
+        else
+            echo "Python daemon process: NOT RUNNING"
+        fi
+        
+        echo -n "Launchd agent state: "
+        if launchctl list | grep -q com.user.clauderesume; then
+            echo "LOADED"
+            launchctl list | grep com.user.clauderesume
+        else
+            echo "NOT LOADED"
+        fi
+        ;;
+    logs)
+        echo "--- Daemon Logs (~/.claude/claude_resume_daemon.log) ---"
+        tail -n 20 ~/.claude/claude_resume_daemon.log
+        ;;
+    install)
+        echo "Installing Launchd plist and loading agent..."
+        python3 ~/.claude/claude_resume_daemon.py install
+        ;;
+    uninstall)
+        echo "Uninstalling Launchd plist and unloading agent..."
+        python3 ~/.claude/claude_resume_daemon.py uninstall
+        ;;
+    *)
+        echo "Usage: claude-resume [start|stop|restart|status|logs|install|uninstall]"
+        exit 1
+        ;;
+esac
