@@ -62,38 +62,106 @@ def get_active_sessions():
             pass
     return sessions
 
-def get_tty_for_pid(pid):
-    """Gets the TTY name for a process PID."""
+def check_tmux(tty_path):
+    """Checks if a TTY is active in a tmux session."""
     try:
-        output = subprocess.check_output(["ps", "-p", str(pid), "-o", "tty="], text=True).strip()
-        if output and "?" not in output:
-            if not output.startswith("/dev/"):
-                return f"/dev/{output}"
-            return output
+        panes_output = subprocess.check_output(
+            ["tmux", "list-panes", "-a", "-F", "#{pane_tty}"],
+            text=True
+        ).strip().split('\n')
+        for pane_tty in panes_output:
+            if pane_tty == tty_path or os.path.basename(pane_tty) == os.path.basename(tty_path):
+                return True
     except Exception:
         pass
-    return None
+    return False
 
-def get_terminal_app_contents(tty_path):
-    """Retrieves contents of a Terminal.app tab matching tty_path."""
+def check_iterm(tty_path):
+    """Checks if a TTY is active in an iTerm2 session."""
+    tty_name = os.path.basename(tty_path)
+    script = f'''
+    if application "iTerm" is running then
+        tell application "iTerm"
+            repeat with w in windows
+                repeat with t in tabs of w
+                    repeat with s in sessions of t
+                        set s_tty to tty of s
+                        if s_tty is "{tty_path}" or s_tty is "{tty_name}" then
+                            return "yes"
+                        end if
+                    end repeat
+                end repeat
+            end repeat
+        end tell
+    end if
+    return "no"
+    '''
+    try:
+        res = subprocess.check_output(["osascript", "-e", script], text=True).strip()
+        return res == "yes"
+    except Exception:
+        return False
+
+def check_terminal_app(tty_path):
+    """Checks if a TTY is active in Terminal.app."""
     script = f'''
     if application "Terminal" is running then
         tell application "Terminal"
             repeat with w in windows
                 repeat with t in tabs of w
                     if tty of t is "{tty_path}" then
-                        return history of t
+                        return "yes"
                     end if
                 end repeat
             end repeat
         end tell
     end if
-    return ""
+    return "no"
     '''
     try:
-        return subprocess.check_output(["osascript", "-e", script], text=True).strip()
+        res = subprocess.check_output(["osascript", "-e", script], text=True).strip()
+        return res == "yes"
     except Exception:
-        return ""
+        return False
+
+def get_tty_for_pid(pid):
+    """Gets the outer TTY name for a process PID by traversing up the process tree.
+    
+    If the process is running in a wrapper (like kiro-cli-term/node-pty) that allocates
+    a pseudo-terminal, the actual terminal emulator tab/pane runs on the outer TTY.
+    We traverse up the process tree to find the TTY of the first ancestor that is
+    associated with an active Terminal.app, iTerm2, or tmux session.
+    """
+    curr_pid = pid
+    visited = set()
+    fallback_tty = None
+    
+    while curr_pid and curr_pid not in visited:
+        visited.add(curr_pid)
+        try:
+            output = subprocess.check_output(["ps", "-p", str(curr_pid), "-o", "tty="], text=True).strip()
+            if output and "?" not in output:
+                tty = output if output.startswith("/dev/") else f"/dev/{output}"
+                if fallback_tty is None:
+                    fallback_tty = tty
+                
+                # Check if this TTY is active in any terminal emulator
+                if check_tmux(tty) or check_iterm(tty) or check_terminal_app(tty):
+                    return tty
+        except Exception:
+            pass
+            
+        # Get PPID
+        try:
+            output = subprocess.check_output(["ps", "-o", "ppid=", "-p", str(curr_pid)], text=True).strip()
+            if output:
+                curr_pid = int(output)
+            else:
+                break
+        except Exception:
+            break
+            
+    return fallback_tty
 
 def send_terminal_app_enter(tty_path):
     """Sends 'continue' command to Terminal.app tab matching tty_path."""
@@ -116,31 +184,6 @@ def send_terminal_app_enter(tty_path):
         return subprocess.check_output(["osascript", "-e", script], text=True).strip()
     except Exception:
         return "error"
-
-def get_iterm_contents(tty_path):
-    """Retrieves contents of an iTerm2 session matching tty_path."""
-    tty_name = os.path.basename(tty_path)
-    script = f'''
-    if application "iTerm" is running then
-        tell application "iTerm"
-            repeat with w in windows
-                repeat with t in tabs of w
-                    repeat with s in sessions of t
-                        set s_tty to tty of s
-                        if s_tty is "{tty_path}" or s_tty is "{tty_name}" then
-                            return text of s
-                        end if
-                    end repeat
-                end repeat
-            end repeat
-        end tell
-    end if
-    return ""
-    '''
-    try:
-        return subprocess.check_output(["osascript", "-e", script], text=True).strip()
-    except Exception:
-        return ""
 
 def send_iterm_enter(tty_path):
     """Sends 'continue' command to iTerm2 session matching tty_path."""
@@ -168,24 +211,6 @@ def send_iterm_enter(tty_path):
     except Exception:
         return "error"
 
-def get_tmux_contents(tty_path):
-    """Gets text of tmux pane matching tty_path."""
-    try:
-        panes_output = subprocess.check_output(
-            ["tmux", "list-panes", "-a", "-F", "#{pane_tty} #{session_name}:#{window_index}.#{pane_index}"],
-            text=True
-        ).strip().split('\n')
-        
-        for line in panes_output:
-            parts = line.split(maxsplit=1)
-            if len(parts) == 2:
-                pane_tty, pane_id = parts
-                if pane_tty == tty_path or os.path.basename(pane_tty) == os.path.basename(tty_path):
-                    return subprocess.check_output(["tmux", "capture-pane", "-p", "-t", pane_id], text=True).strip()
-    except Exception:
-        pass
-    return ""
-
 def send_tmux_enter(tty_path):
     """Sends 'continue' command to tmux pane matching tty_path."""
     try:
@@ -207,21 +232,12 @@ def send_tmux_enter(tty_path):
 
 def get_terminal_content(tty_path):
     """Queries Terminal.app, iTerm2, and tmux for contents matching tty_path."""
-    # 1. Try tmux first (very fast, no UI AppleScript)
-    content = get_tmux_contents(tty_path)
-    if content:
-        return content, "tmux"
-        
-    # 2. Try iTerm2
-    content = get_iterm_contents(tty_path)
-    if content:
-        return content, "iterm"
-        
-    # 3. Try Terminal.app
-    content = get_terminal_app_contents(tty_path)
-    if content:
-        return content, "terminal"
-        
+    if check_tmux(tty_path):
+        return "", "tmux"
+    if check_iterm(tty_path):
+        return "", "iterm"
+    if check_terminal_app(tty_path):
+        return "", "terminal"
     return "", None
 
 def send_enter(tty_path, terminal_type):
