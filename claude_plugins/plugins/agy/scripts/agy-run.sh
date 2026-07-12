@@ -325,7 +325,7 @@ cmd_ask() {
       local lc; lc=$(echo "$current_model" | tr '[:upper:]' '[:lower:]')
       local next_model=""
       case "$lc" in
-        *opus*)   next_model="pro" ;;
+        *opus*)   next_model="flash" ;;
         *pro*)    next_model="flash" ;;
         *sonnet*) next_model="flash" ;;
         "")       next_model="flash" ;;
