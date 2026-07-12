@@ -14,6 +14,7 @@ alias claude_resume_logs="tail -f ~/.claude/claude_resume_daemon.log"
 alias serve_qwen_36_27b="llama-server -m ~/Models/qwen3.6-27b-mtp-q8/Qwen3.6-27B-Q8_0.gguf --spec-type draft-mtp --spec-draft-n-max 2 -c 16384 -ngl 99 -fa on -np 1 --jinja --reasoning-format deepseek --temp 0.6 --top-p 0.95 --top-k 20 --host 127.0.0.1 --port 8089"
 alias serve_qwen_36_35b="llama-server -m ~/Models/qwen3.6-35b-a3b-mtp-q8/Qwen3.6-35B-A3B-Q8_0.gguf --spec-type draft-mtp --spec-draft-n-max 1 -c 16384 -ngl 99 -fa on -np 1 --jinja --reasoning-format deepseek --temp 0.6 --top-p 0.95 --top-k 20 --host 127.0.0.1 --port 8089"
 alias llama_qwen_36_27b="llama-cli -m ~/Models/qwen3.6-27b-mtp-q8/Qwen3.6-27B-Q8_0.gguf --spec-type draft-mtp --spec-draft-n-max 2 -n -1"
+alias llama_qwen_36_35b="llama-cli -m ~/Models/qwen3.6-35b-a3b-mtp-q8/Qwen3.6-35B-A3B-Q8_0.gguf --spec-type draft-mtp --spec-draft-n-max 1 -n -1"
 
 # Headless Server Sleep Management Aliases
 # (Disables sleep to keep background daemons running, and lets you safely re-enable it)
