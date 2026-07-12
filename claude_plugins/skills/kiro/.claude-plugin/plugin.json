@@ -1,0 +1,12 @@
+{
+  "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
+  "name": "kiro",
+  "version": "0.1.0",
+  "description": "Use the Kiro CLI (`kiro-cli`) from inside Claude Code — slash commands /kiro:setup, /kiro:ask, /kiro:delegate, /kiro:research, /kiro:review, /kiro:help. Supports per-call model selection via --model and effort selection via --effort.",
+  "author": {
+    "name": "yash"
+  },
+  "skills": [
+    "./"
+  ]
+}
