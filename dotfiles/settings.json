@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "defaultMode": "bypassPermissions"
+  },
+  "model": "claude-fable-5[1m]",
+  "enabledPlugins": {
+    "agy@antigravity-cc": true
+  },
+  "extraKnownMarketplaces": {
+    "antigravity-cc": {
+      "source": {
+        "source": "github",
+        "repo": "simplybychris/antigravity-plugin-cc"
+      }
+    }
+  },
+  "effortLevel": "high",
+  "tui": "fullscreen",
+  "skipDangerousModePermissionPrompt": true,
+  "agentPushNotifEnabled": true
+}

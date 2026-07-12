@@ -1,0 +1,9 @@
+.DS_Store
+*.log
+*.pid
+.last_inuse_sweep
+plugin-catalog-cache.json
+__pycache__/
+.mlxenv/
+cache/
+*.jsonl

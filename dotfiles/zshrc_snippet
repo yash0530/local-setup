@@ -1,0 +1,26 @@
+# ==============================================================================
+# Productivity & Local Developer Setup Snippet
+# ==============================================================================
+
+# Aliases with dangerous flag (skip permission prompts)
+alias claude="claude --dangerously-skip-permissions"
+alias agy="agy --dangerously-skip-permissions"
+
+# Claude Code Auto-Resume Daemon
+alias claude_resume="python3 ~/.claude/claude_resume_daemon.py"
+alias claude_resume_logs="tail -f ~/.claude/claude_resume_daemon.log"
+
+# Local Llama Server aliases (8-bit quants with speculative MTP)
+alias serve_qwen_36_27b="llama-server -m ~/Models/qwen3.6-27b-mtp-q8/Qwen3.6-27B-Q8_0.gguf --spec-type draft-mtp --spec-draft-n-max 2 -c 16384 -ngl 99 -fa on -np 1 --jinja --reasoning-format deepseek --temp 0.6 --top-p 0.95 --top-k 20 --host 127.0.0.1 --port 8089"
+alias serve_qwen_36_35b="llama-server -m ~/Models/qwen3.6-35b-a3b-mtp-q8/Qwen3.6-35B-A3B-Q8_0.gguf --spec-type draft-mtp --spec-draft-n-max 1 -c 16384 -ngl 99 -fa on -np 1 --jinja --reasoning-format deepseek --temp 0.6 --top-p 0.95 --top-k 20 --host 127.0.0.1 --port 8089"
+alias llama_qwen_36_27b="llama-cli -m ~/Models/qwen3.6-27b-mtp-q8/Qwen3.6-27B-Q8_0.gguf --spec-type draft-mtp --spec-draft-n-max 2 -n -1"
+
+# Headless Server Sleep Management Aliases
+# (Disables sleep to keep background daemons running, and lets you safely re-enable it)
+alias sleep_no="sudo pmset -a disablesleep 1"
+alias sleep_ok="sudo pmset -a disablesleep 0"
+
+# Kiro CLI pre and post blocks (Keep at top/bottom of .zshrc respectively)
+# Note: Uncomment these if kiro-cli is installed and configured on this machine
+# [[ -f "${HOME}/Library/Application Support/kiro-cli/shell/zshrc.pre.zsh" ]] && builtin source "${HOME}/Library/Application Support/kiro-cli/shell/zshrc.pre.zsh"
+# [[ -f "${HOME}/Library/Application Support/kiro-cli/shell/zshrc.post.zsh" ]] && builtin source "${HOME}/Library/Application Support/kiro-cli/shell/zshrc.post.zsh"
