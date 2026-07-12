@@ -231,10 +231,7 @@ cmd_ask() {
       local next_model=""
       case "$lc" in
         *opus*)   next_model="sonnet" ;;
-        *sonnet*) next_model="qwen" ;;
-        *deepseek*) next_model="qwen" ;;
-        *qwen*)   next_model="auto" ;;
-        "")       next_model="auto" ;;
+        "")       next_model="sonnet" ;;
       esac
 
       if [ -n "$next_model" ] && [ "$next_model" != "$current_model" ]; then
