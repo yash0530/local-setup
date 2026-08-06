@@ -28,6 +28,14 @@ mkdir -p "$CLAUDE_DIR/plugins" \
 echo "Installing settings, plugins, skills, and commands..."
 cp "$REPO_DIR/dotfiles/settings.json" "$CLAUDE_DIR/settings.json"
 
+# settings.json declares a statusLine pointing at this script, so the two must be
+# installed together or the status line silently breaks on a fresh machine.
+if [ -f "$REPO_DIR/dotfiles/statusline-command.sh" ]; then
+  cp "$REPO_DIR/dotfiles/statusline-command.sh" "$CLAUDE_DIR/statusline-command.sh"
+  chmod +x "$CLAUDE_DIR/statusline-command.sh"
+  command -v jq >/dev/null 2>&1 || echo "  note: the status line needs \`jq\` — install it with 'brew install jq'"
+fi
+
 # Use cp -R to copy the plugins, skills, and commands directories safely if they are not empty
 # NOTE: local-llm is skipped here on purpose. Copying it into ~/.claude/plugins
 # would make the local-qwen subagent active in every plain `claude` session,

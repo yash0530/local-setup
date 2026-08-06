@@ -81,9 +81,12 @@ print_model_table() {
   local fd="${1:-2}"
   {
     echo "Aliases (case-insensitive):"
-    echo "  flash-low                     -> Gemini 3.5 Flash (Low)"
-    echo "  flash-medium, flash-med       -> Gemini 3.5 Flash (Medium)"
-    echo "  flash, flash-high             -> Gemini 3.5 Flash (High)"
+    echo "  flash-low                     -> Gemini 3.6 Flash (Low)"
+    echo "  flash-medium, flash-med       -> Gemini 3.6 Flash (Medium)"
+    echo "  flash, flash-high             -> Gemini 3.6 Flash (High)"
+    echo "  flash-3.5-low                 -> Gemini 3.5 Flash (Low)"
+    echo "  flash-3.5-medium, flash-3.5-med -> Gemini 3.5 Flash (Medium)"
+    echo "  flash-3.5, flash-3.5-high     -> Gemini 3.5 Flash (High)"
     echo "  pro-low                       -> Gemini 3.1 Pro (Low)"
     echo "  pro, pro-high                 -> Gemini 3.1 Pro (High)"
     echo "  sonnet, claude-sonnet         -> Claude Sonnet 4.6 (Thinking)"
@@ -91,6 +94,7 @@ print_model_table() {
     echo "  gpt-oss, gpt-oss-120b         -> GPT-OSS 120B (Medium)"
     echo
     echo "Canonical strings (also accepted verbatim, case-sensitive):"
+    echo "  Gemini 3.6 Flash (Low|Medium|High)"
     echo "  Gemini 3.5 Flash (Low|Medium|High)"
     echo "  Gemini 3.1 Pro (Low|High)"
     echo "  Claude Sonnet 4.6 (Thinking)"
@@ -119,6 +123,9 @@ resolve_model_alias() {
     exit 64
   fi
   case "$input" in
+    "Gemini 3.6 Flash (Low)"|\
+    "Gemini 3.6 Flash (Medium)"|\
+    "Gemini 3.6 Flash (High)"|\
     "Gemini 3.5 Flash (Low)"|\
     "Gemini 3.5 Flash (Medium)"|\
     "Gemini 3.5 Flash (High)"|\
@@ -132,9 +139,12 @@ resolve_model_alias() {
   esac
   local lc; lc="$(printf '%s' "$input" | tr '[:upper:]' '[:lower:]')"
   case "$lc" in
-    flash-low)                  printf '%s' "Gemini 3.5 Flash (Low)" ;;
-    flash-medium|flash-med)     printf '%s' "Gemini 3.5 Flash (Medium)" ;;
-    flash|flash-high)           printf '%s' "Gemini 3.5 Flash (High)" ;;
+    flash-low)                  printf '%s' "Gemini 3.6 Flash (Low)" ;;
+    flash-medium|flash-med)     printf '%s' "Gemini 3.6 Flash (Medium)" ;;
+    flash|flash-high)           printf '%s' "Gemini 3.6 Flash (High)" ;;
+    flash-3.5-low)              printf '%s' "Gemini 3.5 Flash (Low)" ;;
+    flash-3.5-medium|flash-3.5-med) printf '%s' "Gemini 3.5 Flash (Medium)" ;;
+    flash-3.5|flash-3.5-high)   printf '%s' "Gemini 3.5 Flash (High)" ;;
     pro-low)                    printf '%s' "Gemini 3.1 Pro (Low)" ;;
     pro|pro-high)               printf '%s' "Gemini 3.1 Pro (High)" ;;
     sonnet|claude-sonnet)       printf '%s' "Claude Sonnet 4.6 (Thinking)" ;;

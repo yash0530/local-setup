@@ -47,6 +47,7 @@ This repository includes a `setup.sh` script to configure everything for you. It
   `claude-local-subagent`, and the Anthropic-translation proxy) into `~/.local/bin`.
 - Stage the opt-in `local-llm` plugin (the `local-qwen` subagent + skill) into
   `~/.claude/local-plugins/` — **not** active in a plain `claude` session.
+- Copy `statusline-command.sh` (the status line `settings.json` points at).
 - Copy and activate the **Claude Auto-Resume Daemon** (`launchd`).
 - Append aliases to your `~/.zshrc`.
 
@@ -56,6 +57,13 @@ chmod +x setup.sh
 ./setup.sh
 source ~/.zshrc
 ```
+
+**Two notes for a fresh machine:**
+- The status line needs `jq` (`brew install jq`). The installer warns if it's missing.
+- `settings.json` enables `frontend-design` and `swift-lsp` from the built-in
+  `claude-plugins-official` marketplace. Those are **not** vendored in this repo —
+  Claude Code fetches them on first run. Only `agy` (from `antigravity-cc`) and the
+  opt-in `local-llm` plugin are vendored here.
 
 ---
 
