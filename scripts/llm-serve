@@ -75,7 +75,7 @@ stop_pidfile() { # pidfile label
 
 wait_healthy() {
   for _ in $(seq 1 300); do
-    if curl -sf "http://127.0.0.1:${LLAMA_PORT}/health" >/dev/null 2>&1; then return 0; fi
+    if curl -sf --max-time 5 "http://127.0.0.1:${LLAMA_PORT}/health" >/dev/null 2>&1; then return 0; fi
     if ! is_running "$SERVER_PID"; then
       echo "  llama-server died on startup — last lines:" >&2
       tail -20 "$SERVER_LOG" >&2
@@ -172,10 +172,12 @@ cmd_status() {
     echo "proxy         stopped"
   fi
 
-  if curl -sf "http://127.0.0.1:${LLAMA_PORT}/health" >/dev/null 2>&1; then
+  # --max-time matters: with -np 1 a long generation occupies the only slot, and
+  # an un-timed curl would hang `status` itself instead of reporting the state.
+  if curl -sf --max-time 5 "http://127.0.0.1:${LLAMA_PORT}/health" >/dev/null 2>&1; then
     echo "health        ok"
   else
-    echo "health        not responding"
+    echo "health        busy or not responding (a long generation may hold the slot)"
   fi
 }
 
