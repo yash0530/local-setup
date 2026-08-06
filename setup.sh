@@ -21,7 +21,6 @@ echo "Creating Claude Code directories..."
 mkdir -p "$CLAUDE_DIR/plugins" \
          "$CLAUDE_DIR/skills" \
          "$CLAUDE_DIR/commands" \
-         "$CLAUDE_DIR/agents" \
          "$CLAUDE_DIR/sessions" \
          "$CLAUDE_DIR/projects"
 
@@ -30,8 +29,15 @@ echo "Installing settings, plugins, skills, and commands..."
 cp "$REPO_DIR/dotfiles/settings.json" "$CLAUDE_DIR/settings.json"
 
 # Use cp -R to copy the plugins, skills, and commands directories safely if they are not empty
+# NOTE: local-llm is skipped here on purpose. Copying it into ~/.claude/plugins
+# would make the local-qwen subagent active in every plain `claude` session,
+# which is exactly what this setup must not do. It is staged separately below.
 if [ -d "$REPO_DIR/claude_plugins/plugins" ] && [ "$(ls -A "$REPO_DIR/claude_plugins/plugins")" ]; then
-  cp -R "$REPO_DIR/claude_plugins/plugins/"* "$CLAUDE_DIR/plugins/"
+  for plugin in "$REPO_DIR/claude_plugins/plugins/"*; do
+    [ -d "$plugin" ] || continue
+    [ "$(basename "$plugin")" = "local-llm" ] && continue
+    cp -R "$plugin" "$CLAUDE_DIR/plugins/"
+  done
 fi
 if [ -d "$REPO_DIR/claude_plugins/skills" ] && [ "$(ls -A "$REPO_DIR/claude_plugins/skills")" ]; then
   cp -R "$REPO_DIR/claude_plugins/skills/"* "$CLAUDE_DIR/skills/"
@@ -39,8 +45,15 @@ fi
 if [ -d "$REPO_DIR/claude_plugins/commands" ] && [ "$(ls -A "$REPO_DIR/claude_plugins/commands")" ]; then
   cp -R "$REPO_DIR/claude_plugins/commands/"* "$CLAUDE_DIR/commands/"
 fi
-if [ -d "$REPO_DIR/claude_plugins/agents" ] && [ "$(ls -A "$REPO_DIR/claude_plugins/agents")" ]; then
-  cp -R "$REPO_DIR/claude_plugins/agents/"* "$CLAUDE_DIR/agents/"
+# The local-llm plugin (local-qwen subagent + local-llm skill) is installed to a
+# staging directory, NOT to ~/.claude. Nothing there is active in a plain
+# `claude` session; `claude_local_subagent` loads it per-session via
+# --plugin-dir. This is what keeps local models out of real Pro-plan work.
+if [ -d "$REPO_DIR/claude_plugins/plugins/local-llm" ]; then
+  echo "Installing opt-in local-llm plugin (not active in plain \`claude\`)..."
+  mkdir -p "$CLAUDE_DIR/local-plugins"
+  rm -rf "$CLAUDE_DIR/local-plugins/local-llm"
+  cp -R "$REPO_DIR/claude_plugins/plugins/local-llm" "$CLAUDE_DIR/local-plugins/"
 fi
 
 # 4. Copy the Auto-Resume Daemon script, install CLI, and configure via launchd
@@ -60,11 +73,11 @@ python3 "$CLAUDE_DIR/claude_resume_daemon.py" install
 # 5. Install the local-LLM stack (llama-server manager, proxy, CLIs)
 echo "Installing local LLM tooling to $HOME/.local/bin..."
 mkdir -p "$HOME/.local/bin"
-for tool in llm-serve llm-proxy.mjs qwen qwen-code mcp-local-llm.mjs; do
+for tool in llm-serve llm-proxy.mjs qwen qwen-code mcp-local-llm.mjs claude-local-subagent; do
   cp "$REPO_DIR/scripts/$tool" "$HOME/.local/bin/$tool"
   chmod +x "$HOME/.local/bin/$tool"
 done
-echo "  installed: llm-serve, qwen, qwen-code (+ llm-proxy, mcp-local-llm)"
+echo "  installed: llm-serve, qwen, qwen-code, claude-local-subagent (+ llm-proxy, mcp-local-llm)"
 
 # Register the local model as an MCP tool for Kiro, which supports MCP but has a
 # fixed cloud-only model list. (Antigravity ignores mcpServers config, so it

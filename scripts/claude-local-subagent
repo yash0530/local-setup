@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# claude-local-subagent — Claude Code on your Pro subscription, with the local
+# Qwen delegation subagent available for this session only.
+#
+# The point: Claude drives (full quality, cloud model), and can hand bulk text
+# work to the local model — but ONLY when you ask it to in the prompt.
+#
+# The local-llm plugin is deliberately NOT installed into ~/.claude, so a plain
+# `claude` has no local subagent and no local skill at all. This wrapper loads it
+# for one session via --plugin-dir.
+#
+#   claude_local_subagent                    interactive
+#   claude_local_subagent -p "ask qwen to summarise src/parser.ts"
+#
+# Every argument is passed through to `claude` untouched.
+#
+# Note this is NOT the same as claude_local_qwen_3.6_*, which run Claude Code
+# itself on local weights. Here the driver is your normal Claude model.
+
+set -euo pipefail
+
+PLUGIN_DIR="${LOCAL_LLM_PLUGIN_DIR:-$HOME/.claude/local-plugins/local-llm}"
+
+if [[ ! -f "$PLUGIN_DIR/.claude-plugin/plugin.json" ]]; then
+  echo "local-llm plugin not found at $PLUGIN_DIR" >&2
+  echo "run ./setup.sh from the local-setup repo to install it" >&2
+  exit 1
+fi
+
+if ! curl -sf --max-time 3 "http://127.0.0.1:${LLAMA_PORT:-8089}/health" >/dev/null 2>&1; then
+  echo "note: llama-server isn't responding — run 'llm-serve start' before delegating." >&2
+fi
+
+exec claude --plugin-dir "$PLUGIN_DIR" "$@"

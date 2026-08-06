@@ -31,6 +31,11 @@ alias claude_local_qwen_3.6_27="qwen-code --model 27b"
 alias claude_local_qwen_3.6_35="qwen-code --model 35b"
 alias claude_local="qwen-code"             # whatever model is already resident
 
+# Claude Code on your Pro subscription, PLUS the local-qwen delegation subagent
+# for this session only. Plain `claude` has no local subagent or skill at all --
+# the local-llm plugin is loaded per-session via --plugin-dir, never installed.
+alias claude_local_subagent="claude-local-subagent"
+
 # One-shot prompts against the resident model (thinking off by default)
 alias qwen_think="qwen --think"
 

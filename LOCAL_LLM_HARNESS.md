@@ -17,7 +17,8 @@ Six pieces were added. Nothing else changed, and **plain `claude` is untouched**
 | 3 | `qwen` | CLI | One-shot prompt. **The universal path** — usable from all three harnesses' shell tools. |
 | 4 | `qwen-code` | CLI wrapper | Launches Claude Code pinned to a local model. What the `claude_local_*` aliases call. |
 | 5 | `mcp-local-llm.mjs` | MCP server | Exposes `ask_local_model` as a tool. **For Kiro.** |
-| 6 | `local-qwen` | Claude Code subagent | Delegation target so local output stays out of the parent context. |
+| 6 | `local-llm` plugin | Claude Code plugin | Bundles the `local-qwen` subagent + `local-llm` skill. **Never installed** — loaded per-session by #7. |
+| 7 | `claude-local-subagent` | CLI wrapper | Claude Code on your **Pro subscription**, with the local subagent available for that session only. |
 
 And what each harness actually got:
 
@@ -35,15 +36,29 @@ And what each harness actually got:
 
 ### Everything here is opt-in
 
-This setup is for **deliberate experimentation**. None of it should touch real
-work done on the Claude Pro subscription unless explicitly asked for.
+This setup is for **deliberate experimentation**. It must never touch real work
+done on the Claude Pro subscription. Two layers enforce that.
 
-Every entry point that a model could invoke on its own — the `local-qwen`
-subagent, the `local-llm` skill, and the `ask_local_model` MCP tool — is worded
-to fire **only when the user names the local model in the current request**
-("ask qwen", "use the local model", "run this locally"). Each description states
-explicitly that a task being bulky, repetitive, or cheaper to run locally is
-*not* a reason to route it there.
+**Layer 1 — structural (Claude Code): the subagent doesn't exist unless you ask
+for it.** The `local-llm` plugin is installed to `~/.claude/local-plugins/`,
+which Claude Code does *not* read. It is **not** in `~/.claude/plugins/`,
+`~/.claude/agents/`, or `~/.claude/skills/`. `claude-local-subagent` loads it for
+one session with `--plugin-dir`. This is not a heuristic — the agent is absent
+from the session entirely.
+
+Verified by asking each to enumerate its own subagents:
+
+| Command | `local-qwen` present? |
+|---|---|
+| `claude` | **No** — `agy:runner, claude, Explore, general-purpose, kiro:runner, Plan, statusline-setup` |
+| `claude_local_subagent` | **Yes** — same list plus `local-llm:local-qwen` |
+
+**Layer 2 — behavioural (Kiro, and the subagent once loaded).** Kiro's MCP tool
+can't be structurally hidden the same way, so its description — and the
+subagent's and skill's — state that they fire **only when the user names the
+local model in the current request** ("ask qwen", "use the local model", "run
+this locally"), and that a task being bulky, repetitive, or cheaper to run
+locally is explicitly *not* a reason to route it there.
 
 Verified both directions on Kiro:
 
@@ -55,12 +70,11 @@ Verified both directions on Kiro:
 The user-driven entry points (`qwen`, `qwen-code`, `claude_local_*`) are inert
 until you run them, and plain `claude` never routes anywhere but Anthropic.
 
-> **These are strong heuristics, not hard enforcement.** Tool and agent
-> descriptions steer model selection; they don't forbid it. For a hard guarantee
-> during sensitive work: `kiro-cli mcp add --name local-llm --scope global
-> --command node --args ~/.local/bin/mcp-local-llm.mjs --disabled --force`
-> switches Kiro's tool off entirely, and moving `~/.claude/agents/local-qwen.md`
-> aside removes the subagent from Claude Code.
+> **Layer 2 is a strong heuristic, not enforcement** — tool descriptions steer
+> model selection, they don't forbid it. For a hard guarantee on the Kiro side:
+> `kiro-cli mcp add --name local-llm --scope global --command node --args
+> ~/.claude/../.local/bin/mcp-local-llm.mjs --disabled --force`. The Claude Code
+> side needs no such switch; it is already structural.
 
 ---
 

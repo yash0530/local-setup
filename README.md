@@ -86,13 +86,28 @@ alias claude_resume_logs="claude-resume logs"
 llm_start / llm_stop / llm_status / llm_logs   # manage the local stack
 llm_use_27 / llm_use_35                        # switch resident model
 
+# Claude Code running entirely on local weights
 claude_local_qwen_3.6_27   # Claude Code on Qwen 3.6 27B (dense, higher quality)
 claude_local_qwen_3.6_35   # Claude Code on Qwen 3.6 35B A3B (MoE, ~4x faster)
 claude_local               # Claude Code on whichever model is resident
+
+# Claude Code on your Pro plan, PLUS the local-qwen delegation subagent
+claude_local_subagent
 ```
-`ANTHROPIC_BASE_URL` is deliberately **not** exported globally — it is scoped
-inside the `qwen-code` wrapper, so plain `claude` always stays on your Pro
-subscription.
+
+**Local models never leak into real work.** Two independent guarantees:
+
+| Command | Model driving | Local subagent available? |
+|---|---|---|
+| `claude` | Pro subscription | **No — not present in the session at all** |
+| `claude_local_subagent` | Pro subscription | Yes, and only when you name it in the prompt |
+| `claude_local_qwen_3.6_*` | Local Qwen | n/a — the whole session is local |
+
+The `local-llm` plugin lives in `~/.claude/local-plugins/`, which Claude Code
+does **not** read; `claude_local_subagent` loads it for one session via
+`--plugin-dir`. And `ANTHROPIC_BASE_URL` is never exported globally — it is
+scoped inside the `qwen-code` process — so plain `claude` always stays on your
+Pro subscription.
 
 ---
 
