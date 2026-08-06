@@ -10,9 +10,33 @@ alias agy="agy --dangerously-skip-permissions"
 alias claude_resume="claude-resume"
 alias claude_resume_logs="claude-resume logs"
 
-# Local Llama Server aliases (8-bit quants with speculative MTP)
-alias serve_qwen_36_27b="llama-server -m ~/Models/qwen3.6-27b-mtp-q8/Qwen3.6-27B-Q8_0.gguf --spec-type draft-mtp --spec-draft-n-max 2 -c 16384 -ngl 99 -fa on -np 1 --jinja --reasoning-format deepseek --temp 0.6 --top-p 0.95 --top-k 20 --host 127.0.0.1 --port 8089"
-alias serve_qwen_36_35b="llama-server -m ~/Models/qwen3.6-35b-a3b-mtp-q8/Qwen3.6-35B-A3B-Q8_0.gguf --spec-type draft-mtp --spec-draft-n-max 1 -c 16384 -ngl 99 -fa on -np 1 --jinja --reasoning-format deepseek --temp 0.6 --top-p 0.95 --top-k 20 --host 127.0.0.1 --port 8089"
+# ------------------------------------------------------------------------------
+# Local LLM stack (Qwen 3.6 via llama-server)
+# ------------------------------------------------------------------------------
+# NOTE: ANTHROPIC_BASE_URL is deliberately NOT exported here. Exporting it would
+# hijack the plain `claude` command and route your Claude Pro subscription to the
+# local model. The local env is scoped inside the `qwen-code` wrapper only, so
+# `claude` on its own always stays on your Pro subscription.
+
+# Stack lifecycle (one model fits in 64 GB at a time; start = switch)
+alias llm_start="llm-serve start"          # defaults to 35B A3B
+alias llm_stop="llm-serve stop"
+alias llm_status="llm-serve status"
+alias llm_logs="llm-serve logs"
+alias llm_use_27="llm-serve start 27b"
+alias llm_use_35="llm-serve start 35b"
+
+# Claude Code running entirely on a local model (pinned per alias)
+alias claude_local_qwen_3.6_27="qwen-code --model 27b"
+alias claude_local_qwen_3.6_35="qwen-code --model 35b"
+alias claude_local="qwen-code"             # whatever model is already resident
+
+# One-shot prompts against the resident model (thinking off by default)
+alias qwen_think="qwen --think"
+
+# Raw llama.cpp escape hatches (bench-derived MTP draft depths)
+alias serve_qwen_36_27b="llama-server -m ~/Models/qwen3.6-27b-mtp-q8/Qwen3.6-27B-Q8_0.gguf --spec-type draft-mtp --spec-draft-n-max 2 -c 65536 -ngl 99 -fa on -np 1 -ctk q8_0 -ctv q8_0 --jinja --reasoning-format deepseek --temp 0.6 --top-p 0.95 --top-k 20 --host 127.0.0.1 --port 8089"
+alias serve_qwen_36_35b="llama-server -m ~/Models/qwen3.6-35b-a3b-mtp-q8/Qwen3.6-35B-A3B-Q8_0.gguf --spec-type draft-mtp --spec-draft-n-max 1 -c 65536 -ngl 99 -fa on -np 1 -ctk q8_0 -ctv q8_0 --jinja --reasoning-format deepseek --temp 0.6 --top-p 0.95 --top-k 20 --host 127.0.0.1 --port 8089"
 alias llama_qwen_36_27b="llama-cli -m ~/Models/qwen3.6-27b-mtp-q8/Qwen3.6-27B-Q8_0.gguf --spec-type draft-mtp --spec-draft-n-max 2 -n -1"
 alias llama_qwen_36_35b="llama-cli -m ~/Models/qwen3.6-35b-a3b-mtp-q8/Qwen3.6-35B-A3B-Q8_0.gguf --spec-type draft-mtp --spec-draft-n-max 1 -n -1"
 
