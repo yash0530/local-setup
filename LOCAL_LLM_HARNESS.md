@@ -6,6 +6,35 @@ or executed on this box (M5 Pro, 64 GB), not estimated.
 
 ---
 
+## 0. What exists — the whole inventory
+
+Six pieces were added. Nothing else changed, and **plain `claude` is untouched**.
+
+| # | Thing | Type | What it's for |
+|---|---|---|---|
+| 1 | `llm-serve` | CLI | Start/stop/switch the model + proxy. Everything else assumes this is running. |
+| 2 | `llm-proxy.mjs` | background service | Translates Anthropic ⇄ OpenAI so **Claude Code** can run on local weights. Started automatically by `llm-serve`. |
+| 3 | `qwen` | CLI | One-shot prompt. **The universal path** — usable from all three harnesses' shell tools. |
+| 4 | `qwen-code` | CLI wrapper | Launches Claude Code pinned to a local model. What the `claude_local_*` aliases call. |
+| 5 | `mcp-local-llm.mjs` | MCP server | Exposes `ask_local_model` as a tool. **For Kiro.** |
+| 6 | `local-qwen` | Claude Code subagent | Delegation target so local output stays out of the parent context. |
+
+And what each harness actually got:
+
+| Harness | What it got | How you use it |
+|---|---|---|
+| **Claude Code** | All of it — proxy, subagent, CLI | `claude_local_qwen_3.6_35`, or delegate to `local-qwen`, or just run `qwen` in Bash |
+| **Kiro** | MCP tool + CLI | It calls `ask_local_model` on its own; already registered globally |
+| **agy** | CLI only (no MCP — tested, unsupported) | Tell it to `run_command` → `qwen "..."` |
+
+> **On the "MCP subagent" confusion:** these are two *different* things, for two
+> different harnesses. The **MCP server** (#5) is for **Kiro**. The **subagent**
+> (#6) is a Claude Code feature that shells out to `qwen` — no MCP involved.
+> Claude Code never needed MCP here, because the proxy gives it something
+> strictly better: the local model driving the real toolset.
+
+---
+
 ## 1. The core problem, and the three ways around it
 
 `llama-server` speaks the **OpenAI** chat-completions API. The harnesses don't
