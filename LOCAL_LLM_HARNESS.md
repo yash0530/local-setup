@@ -1,38 +1,45 @@
-# Wiring local Qwen 3.6 into Claude Code, agy, and Kiro
+# Wiring local Qwen 3.6 into Claude Code
 
-How to use the two locally-served Qwen 3.6 models as working agents inside the
-three CLI harnesses on this machine. Every number and command below was measured
-or executed on this box (M5 Pro, 64 GB), not estimated.
+How to use the two locally-served Qwen 3.6 models as working agents inside Claude
+Code. Every number and command below was measured or executed on this box
+(M5 Pro, 64 GB), not estimated.
+
+**Scope: Claude Code only.** Kiro and agy were evaluated and deliberately left
+out — see §0. They keep running on their own cloud models.
 
 ---
 
 ## 0. What exists — the whole inventory
 
 Six pieces were added. Nothing else changed, and **plain `claude` is untouched**.
+Kiro and agy have nothing installed at all.
 
 | # | Thing | Type | What it's for |
 |---|---|---|---|
 | 1 | `llm-serve` | CLI | Start/stop/switch the model + proxy. Everything else assumes this is running. |
 | 2 | `llm-proxy.mjs` | background service | Translates Anthropic ⇄ OpenAI so **Claude Code** can run on local weights. Started automatically by `llm-serve`. |
-| 3 | `qwen` | CLI | One-shot prompt. **The universal path** — usable from all three harnesses' shell tools. |
+| 3 | `qwen` | CLI | One-shot prompt. Run it yourself, or from a Claude Code Bash call. |
 | 4 | `qwen-code` | CLI wrapper | Launches Claude Code pinned to a local model. What the `claude_local_*` aliases call. |
-| 5 | `mcp-local-llm.mjs` | MCP server | Exposes `ask_local_model` as a tool. **For Kiro.** |
-| 6 | `local-llm` plugin | Claude Code plugin | Bundles the `local-qwen` subagent + `local-llm` skill. **Never installed** — loaded per-session by #7. |
-| 7 | `claude-local-subagent` | CLI wrapper | Claude Code on your **Pro subscription**, with the local subagent available for that session only. |
+| 5 | `local-llm` plugin | Claude Code plugin | Bundles the `local-qwen` subagent + `local-llm` skill. **Never installed** — loaded per-session by #6. |
+| 6 | `claude-local-subagent` | CLI wrapper | Claude Code on your **Pro subscription**, with the local subagent available for that session only. |
 
 And what each harness actually got:
 
 | Harness | What it got | How you use it |
 |---|---|---|
-| **Claude Code** | All of it — proxy, subagent, CLI | `claude_local_qwen_3.6_35`, or delegate to `local-qwen`, or just run `qwen` in Bash |
-| **Kiro** | MCP tool + CLI | It calls `ask_local_model` on its own; already registered globally |
-| **agy** | CLI only (no MCP — tested, unsupported) | Tell it to `run_command` → `qwen "..."` |
+| **Claude Code** | Everything — proxy, opt-in subagent, CLI | `claude_local_qwen_3.6_35`, or `claude_local_subagent`, or run `qwen` yourself |
+| **Kiro** | **Nothing — removed** | n/a |
+| **agy** | **Nothing** | n/a |
 
-> **On the "MCP subagent" confusion:** these are two *different* things, for two
-> different harnesses. The **MCP server** (#5) is for **Kiro**. The **subagent**
-> (#6) is a Claude Code feature that shells out to `qwen` — no MCP involved.
-> Claude Code never needed MCP here, because the proxy gives it something
-> strictly better: the local model driving the real toolset.
+> **Deliberately Claude Code only.** An earlier revision registered an MCP server
+> (`ask_local_model`) with Kiro. That has been **removed** — `~/.kiro/settings/mcp.json`
+> is now `{"mcpServers": {}}`, and the MCP server script is deleted. agy never had
+> anything: it ignores `mcpServers` in its settings (tested directly) and its tool
+> list is fixed.
+>
+> The local models are an experiment, and confining them to one harness keeps the
+> blast radius small. Kiro and agy do their real work on their own cloud models,
+> untouched.
 
 ### Everything here is opt-in
 
@@ -53,81 +60,70 @@ Verified by asking each to enumerate its own subagents:
 | `claude` | **No** — `agy:runner, claude, Explore, general-purpose, kiro:runner, Plan, statusline-setup` |
 | `claude_local_subagent` | **Yes** — same list plus `local-llm:local-qwen` |
 
-**Layer 2 — behavioural (Kiro, and the subagent once loaded).** Kiro's MCP tool
-can't be structurally hidden the same way, so its description — and the
-subagent's and skill's — state that they fire **only when the user names the
-local model in the current request** ("ask qwen", "use the local model", "run
-this locally"), and that a task being bulky, repetitive, or cheaper to run
-locally is explicitly *not* a reason to route it there.
-
-Verified both directions on Kiro:
-
-| Prompt | Result |
-|---|---|
-| "Summarize in one sentence what a semaphore is. **This is bulk text work.**" | answered directly — **no tool call** |
-| "**Ask the local model:** what is a semaphore in one sentence?" | called `ask_local_model` |
+**Layer 2 — behavioural (inside a `claude_local_subagent` session).** Once the
+plugin *is* loaded, the subagent's and skill's descriptions state that they fire
+**only when you name the local model in the request** ("ask qwen", "use the local
+model", "run this locally"), and that a task being bulky, repetitive, or cheaper
+to run locally is explicitly *not* a reason to route it there.
 
 The user-driven entry points (`qwen`, `qwen-code`, `claude_local_*`) are inert
 until you run them, and plain `claude` never routes anywhere but Anthropic.
 
-> **Layer 2 is a strong heuristic, not enforcement** — tool descriptions steer
-> model selection, they don't forbid it. For a hard guarantee on the Kiro side:
-> `kiro-cli mcp add --name local-llm --scope global --command node --args
-> ~/.claude/../.local/bin/mcp-local-llm.mjs --disabled --force`. The Claude Code
-> side needs no such switch; it is already structural.
+Because Kiro and agy have no local integration at all, they need no guard.
 
 ---
 
-## 1. The core problem, and the three ways around it
+## 1. The core problem, and why only Claude Code
 
-`llama-server` speaks the **OpenAI** chat-completions API. The harnesses don't
-all want that:
+`llama-server` speaks the **OpenAI** chat-completions API. Claude Code speaks the
+**Anthropic Messages API**. Bridging those two is what unlocks everything else.
 
-| Harness | Talks | Can it point at a local endpoint? | Integration that works |
+| Harness | Talks | Can it point at a local endpoint? | Status |
 |---|---|---|---|
-| **Claude Code** | Anthropic Messages API | Yes — `ANTHROPIC_BASE_URL` | **Translation proxy** (full agent loop) + CLI + subagent |
-| **Kiro** (`kiro-cli`) | Fixed cloud model list | No | **MCP tool** + CLI |
-| **Antigravity** (`agy`) | Fixed cloud model list | No | **CLI only** (via its `run_command` tool) |
+| **Claude Code** | Anthropic Messages API | **Yes** — `ANTHROPIC_BASE_URL` | Fully integrated |
+| **Kiro** (`kiro-cli`) | Fixed cloud model list | No | **Not integrated** (removed) |
+| **Antigravity** (`agy`) | Fixed cloud model list | No | **Not integrated** |
 
-So there are three integration paths, in descending order of power:
+Claude Code is the only one of the three that can be pointed at an arbitrary
+endpoint, which makes it the only one where a local model gets *real agency*
+rather than being a question-answering sidecar. Two paths are used:
 
-**A. Base-URL swap (Claude Code only).** A ~400-line shim translates Anthropic
-Messages ⇄ OpenAI, so Claude Code's *entire* toolset — Read, Edit, Write, Bash,
-Grep, subagents — runs on local weights. This is the only path that gives a
-local model real agency.
+**A. Base-URL swap.** A ~400-line shim translates Anthropic Messages ⇄ OpenAI,
+so Claude Code's *entire* toolset — Read, Edit, Write, Bash, Grep, subagents —
+runs on local weights.
 
-**B. MCP tool (Kiro, Claude Code).** The cloud model stays in the driver's seat
-and calls the local model as a tool for bulk text work.
+**B. Shell CLI.** `qwen` is a plain command, so it works from a Bash call inside
+any session (or straight from your terminal). This is the workhorse for bulk
+text work.
 
-**C. Shell CLI (universal).** Every harness has a shell tool, so a plain `qwen`
-command works everywhere with zero harness support. This is the workhorse.
-
-> **agy caveat:** Antigravity ignores an `mcpServers` block in
-> `~/.gemini/antigravity-cli/settings.json` — this was tested directly, and the
-> tool never appears in its tool list. Its 17 built-in tools are fixed. It
-> reaches the local model only through `run_command` calling `qwen`.
+Kiro and agy were both evaluated. Kiro supports MCP and briefly had an
+`ask_local_model` tool registered; it was removed to keep the experiment confined
+to one harness. agy never had anything — it **ignores** an `mcpServers` block in
+`~/.gemini/antigravity-cli/settings.json` (tested directly; the tool never
+appears in its 17-tool list) and cannot take a custom endpoint.
 
 ```
                  ┌─────────────────────────────────────────┐
                  │   llama-server  :8089  (OpenAI API)      │
                  │   one Qwen 3.6 GGUF resident at a time   │
                  └─────────────────────────────────────────┘
-                     ▲              ▲                ▲
-        OpenAI HTTP  │              │ stdio (MCP)    │ HTTP
-                     │              │                │
-        ┌────────────┴───┐  ┌───────┴────────┐  ┌────┴──────────┐
-        │  llm-proxy     │  │ mcp-local-llm  │  │  qwen  (CLI)  │
-        │  :8790         │  │                │  │               │
-        │  Anthropic API │  │  MCP server    │  │  one-shot      │
-        └────────┬───────┘  └───────┬────────┘  └────┬──────────┘
-                 │                  │                │
-          ANTHROPIC_BASE_URL   kiro-cli mcp     Bash / run_command /
-                 │                  │           execute_bash
-          ┌──────┴──────┐    ┌──────┴──────┐    ┌───┴──────────────┐
-          │ qwen-code   │    │   Kiro      │    │ all three CLIs   │
-          │ (Claude Code│    │             │    │                  │
-          │  on Qwen)   │    │             │    │                  │
-          └─────────────┘    └─────────────┘    └──────────────────┘
+                     ▲                          ▲
+        OpenAI HTTP  │                          │ HTTP
+                     │                          │
+        ┌────────────┴───┐            ┌─────────┴─────┐
+        │  llm-proxy     │            │  qwen  (CLI)  │
+        │  :8790         │            │  one-shot     │
+        │  Anthropic API │            │               │
+        └────────┬───────┘            └───────┬───────┘
+                 │                            │
+          ANTHROPIC_BASE_URL            your shell, or a
+                 │                      Claude Code Bash call
+          ┌──────┴───────────┐                 │
+          │ qwen-code        │        ┌────────┴──────────┐
+          │ claude_local_*   │        │ local-qwen        │
+          │ (Claude Code     │        │ subagent (opt-in) │
+          │  on Qwen)        │        └───────────────────┘
+          └──────────────────┘
 ```
 
 ---
@@ -277,25 +273,22 @@ Installed at `~/.claude/agents/local-qwen.md`. Delegate with
 conclusion matters — it keeps that output out of the parent context, exactly like
 `agy:runner` and `kiro:runner`.
 
-### 5.3 Kiro — MCP tool
+### 5.3 Kiro and agy — deliberately not integrated
 
-Registered globally (`~/.kiro/settings/mcp.json`):
+Neither has any local-model integration, by choice.
 
-```bash
-kiro-cli mcp add --name local-llm --scope global \
-  --command node --args ~/.local/bin/mcp-local-llm.mjs --force
-```
+**Kiro** supports MCP, and an earlier revision registered an `ask_local_model`
+tool with it (verified working, 1.96 s round-trip). It has since been
+**removed**: `~/.kiro/settings/mcp.json` is now `{"mcpServers": {}}` and the MCP
+server script is deleted. Confirmed by asking Kiro to use it — it replies that it
+has no such tool and answers from its own model.
 
-Kiro's cloud model then calls `ask_local_model` itself. Verified working — a
-round-trip completed in **1.96 s**.
+**agy** never had anything. It ignores `mcpServers` in its settings (tested — the
+tool never appears in its tool list) and its model list is cloud-only.
 
-### 5.4 agy — CLI only
-
-No MCP, no custom endpoint. Just tell it to shell out:
-
-```bash
-agy -p "Run: qwen -f src/parser.ts 'summarise this in 5 bullets' — then act on the summary."
-```
+Both keep doing their real work on their own cloud models. If you ever want a
+local answer inside one of them, run `qwen` yourself and paste the result; there
+is no wiring to re-enable.
 
 ---
 
@@ -352,8 +345,8 @@ That ~20x gap is why the split is deliberate:
 
 - **Agent path (`qwen-code`, Claude Code):** thinking **on**. Quality matters,
   and the heartbeat covers the latency. `PROXY_THINK=0` to disable.
-- **Bulk path (`qwen` CLI, MCP tool):** thinking **off** by default, since
-  summarising and drafting gain nothing from it. `--think` opts in per call.
+- **Bulk path (`qwen` CLI):** thinking **off** by default, since summarising and
+  drafting gain nothing from it. `--think` opts in per call.
 
 ```bash
 qwen "summarise this log" -f app.log                    # off — bulk work
@@ -441,10 +434,8 @@ when being wrong is cheap to detect.
 | `~/.local/bin/llm-proxy.mjs` | Anthropic ⇄ OpenAI translation shim (port 8790) |
 | `~/.local/bin/qwen` | one-shot CLI — the universal integration |
 | `~/.local/bin/qwen-code` | Claude Code pinned to a local model |
-| `~/.local/bin/mcp-local-llm.mjs` | MCP server exposing `ask_local_model` |
-| `~/.claude/agents/local-qwen.md` | Claude Code delegation subagent |
-| `~/.claude/skills/local-llm/SKILL.md` | routing guidance for Claude |
-| `~/.kiro/settings/mcp.json` | Kiro's MCP registration |
+| `~/.local/bin/claude-local-subagent` | Claude Code + the opt-in local subagent |
+| `~/.claude/local-plugins/local-llm/` | the opt-in plugin (subagent + skill). **Not** read by a plain `claude` |
 | `~/.local/state/local-llm/` | pidfiles, `current`, logs |
 
 All of it is reproducible on a new machine with `./setup.sh` from this repo.

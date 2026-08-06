@@ -2,6 +2,8 @@
 
 An optimized, production-ready environment setup for macOS (Apple Silicon MacBook Pro M5 Pro 64GB) combining Claude Code, Google Antigravity CLI (`agy`), Kiro CLI (`kiro-cli`), and local Llama models with speculative decoding (MTP).
 
+The local models are integrated into **Claude Code only**, and are strictly opt-in — a plain `claude` session has no access to them whatsoever. See [LOCAL_LLM_HARNESS.md](LOCAL_LLM_HARNESS.md).
+
 ---
 
 ## 1. Prerequisites & Tool Installation
@@ -41,10 +43,10 @@ This repository includes a `setup.sh` script to configure everything for you. It
 - Back up your existing `~/.claude/` configuration.
 - Install the custom Claude plugins: `agy` (Antigravity) and `kiro` (Kiro CLI).
 - Copy `settings.json` (skips permission alerts and enables plugins).
-- Install the `local-qwen` subagent and `local-llm` skill.
-- Install the **local LLM stack** (`llm-serve`, `qwen`, `qwen-code`, the
-  Anthropic-translation proxy, and the MCP server) into `~/.local/bin`.
-- Register the local model as an MCP tool with `kiro-cli`.
+- Install the **local LLM stack** (`llm-serve`, `qwen`, `qwen-code`,
+  `claude-local-subagent`, and the Anthropic-translation proxy) into `~/.local/bin`.
+- Stage the opt-in `local-llm` plugin (the `local-qwen` subagent + skill) into
+  `~/.claude/local-plugins/` — **not** active in a plain `claude` session.
 - Copy and activate the **Claude Auto-Resume Daemon** (`launchd`).
 - Append aliases to your `~/.zshrc`.
 
@@ -130,18 +132,23 @@ The auto-resume daemon runs silently in the background via `launchd` (`com.user.
 
 Based on benchmark evaluations, the fastest served versions are the **8-bit quantized GGUF models** running speculative decoding (MTP) on **`llama.cpp`** (`llama-server`).
 
+The local models are wired into **Claude Code only**. Kiro and agy were evaluated
+and deliberately left out — agy cannot reach a local model at all (it ignores
+`mcpServers` and takes no custom endpoint), and Kiro's MCP integration was removed
+to keep the experiment confined to one harness.
+
 **Why llama.cpp and not vLLM:** MTP requires a single slot (`-np 1`), so you get
 concurrency *or* MTP — never both. vLLM is CUDA-first with no MTP support for
 these GGUFs, which is why it benchmarks *slower* at concurrency 1 on Apple
 Silicon. With one user at the keyboard, keep MTP and let requests queue.
 
-> **Using these models *inside* Claude Code / agy / Kiro:** see
+> **Using these models *inside* Claude Code:** see
 > **[LOCAL_LLM_HARNESS.md](LOCAL_LLM_HARNESS.md)** for the full integration guide.
 > Short version — `setup.sh` installs `llm-serve`, `qwen`, and `qwen-code`:
 >
 > ```bash
 > llm-serve start              # load 35B A3B + the Anthropic-translation proxy
-> qwen "explain this regex"    # one-shot, works from every harness's shell tool
+> qwen "explain this regex"    # one-shot, from your shell or a Bash call
 > claude_local_qwen_3.6_35     # Claude Code running 100% on local weights
 > ```
 >

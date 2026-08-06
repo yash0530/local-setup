@@ -73,22 +73,11 @@ python3 "$CLAUDE_DIR/claude_resume_daemon.py" install
 # 5. Install the local-LLM stack (llama-server manager, proxy, CLIs)
 echo "Installing local LLM tooling to $HOME/.local/bin..."
 mkdir -p "$HOME/.local/bin"
-for tool in llm-serve llm-proxy.mjs qwen qwen-code mcp-local-llm.mjs claude-local-subagent; do
+for tool in llm-serve llm-proxy.mjs qwen qwen-code claude-local-subagent; do
   cp "$REPO_DIR/scripts/$tool" "$HOME/.local/bin/$tool"
   chmod +x "$HOME/.local/bin/$tool"
 done
-echo "  installed: llm-serve, qwen, qwen-code, claude-local-subagent (+ llm-proxy, mcp-local-llm)"
-
-# Register the local model as an MCP tool for Kiro, which supports MCP but has a
-# fixed cloud-only model list. (Antigravity ignores mcpServers config, so it
-# reaches the local model through the `qwen` CLI via its run_command tool.)
-if command -v kiro-cli >/dev/null 2>&1; then
-  echo "Registering local-llm MCP server with kiro-cli..."
-  kiro-cli mcp add --name local-llm --scope global \
-    --command node --args "$HOME/.local/bin/mcp-local-llm.mjs" --force >/dev/null 2>&1 \
-    && echo "  kiro-cli: local-llm MCP server registered" \
-    || echo "  kiro-cli: MCP registration skipped (add it manually if wanted)"
-fi
+echo "  installed: llm-serve, qwen, qwen-code, claude-local-subagent (+ llm-proxy)"
 
 # 6. Append zshrc snippet to ~/.zshrc
 ZSHRC="$HOME/.zshrc"
