@@ -41,6 +41,10 @@ This repository includes a `setup.sh` script to configure everything for you. It
 - Back up your existing `~/.claude/` configuration.
 - Install the custom Claude plugins: `agy` (Antigravity) and `kiro` (Kiro CLI).
 - Copy `settings.json` (skips permission alerts and enables plugins).
+- Install the `local-qwen` subagent and `local-llm` skill.
+- Install the **local LLM stack** (`llm-serve`, `qwen`, `qwen-code`, the
+  Anthropic-translation proxy, and the MCP server) into `~/.local/bin`.
+- Register the local model as an MCP tool with `kiro-cli`.
 - Copy and activate the **Claude Auto-Resume Daemon** (`launchd`).
 - Append aliases to your `~/.zshrc`.
 
@@ -77,6 +81,19 @@ alias claude_resume="claude-resume"
 alias claude_resume_logs="claude-resume logs"
 ```
 
+### 3.4 Local LLM Aliases
+```bash
+llm_start / llm_stop / llm_status / llm_logs   # manage the local stack
+llm_use_27 / llm_use_35                        # switch resident model
+
+claude_local_qwen_3.6_27   # Claude Code on Qwen 3.6 27B (dense, higher quality)
+claude_local_qwen_3.6_35   # Claude Code on Qwen 3.6 35B A3B (MoE, ~4x faster)
+claude_local               # Claude Code on whichever model is resident
+```
+`ANTHROPIC_BASE_URL` is deliberately **not** exported globally — it is scoped
+inside the `qwen-code` wrapper, so plain `claude` always stays on your Pro
+subscription.
+
 ---
 
 ## 4. Claude Auto-Resume Daemon
@@ -98,12 +115,37 @@ The auto-resume daemon runs silently in the background via `launchd` (`com.user.
 
 Based on benchmark evaluations, the fastest served versions are the **8-bit quantized GGUF models** running speculative decoding (MTP) on **`llama.cpp`** (`llama-server`).
 
+**Why llama.cpp and not vLLM:** MTP requires a single slot (`-np 1`), so you get
+concurrency *or* MTP — never both. vLLM is CUDA-first with no MTP support for
+these GGUFs, which is why it benchmarks *slower* at concurrency 1 on Apple
+Silicon. With one user at the keyboard, keep MTP and let requests queue.
+
+> **Using these models *inside* Claude Code / agy / Kiro:** see
+> **[LOCAL_LLM_HARNESS.md](LOCAL_LLM_HARNESS.md)** for the full integration guide.
+> Short version — `setup.sh` installs `llm-serve`, `qwen`, and `qwen-code`:
+>
+> ```bash
+> llm-serve start              # load 35B A3B + the Anthropic-translation proxy
+> qwen "explain this regex"    # one-shot, works from every harness's shell tool
+> claude_local_qwen_3.6_35     # Claude Code running 100% on local weights
+> ```
+>
+> Plain `claude` is unaffected and still uses your Claude Pro subscription.
+
 ### 5.1 Serving Parameters & Launch Commands
 
 We use `llama-server` from Homebrew:
 ```bash
 brew install llama.cpp
 ```
+
+The launch lines below use `-c 65536`. For harness use `llm-serve` goes further
+and serves the model's full native **262,144** window with a quantized KV cache
+(`-ctk/-ctv q8_0`) — measured at only **+1.4 GB** over 65k, because these Qwen
+MoE models use very few KV heads. That headroom matters: Claude Code's system
+prompt plus tool definitions alone measure **~23,000 tokens**. See
+[LOCAL_LLM_HARNESS.md §4](LOCAL_LLM_HARNESS.md) for the caveat that deep context
+is cheap to *allocate* but slow to *use*.
 
 #### 🥇 Model 1: Qwen 3.6 27B (Dense) — 8-bit Quant (Q8_0) + MTP
 - **Best speculative draft depth**: `draft-n=2` (Acceptance rate: **68%**).
@@ -112,7 +154,7 @@ brew install llama.cpp
   ```bash
   llama-server -m ~/Models/qwen3.6-27b-mtp-q8/Qwen3.6-27B-Q8_0.gguf \
     --spec-type draft-mtp --spec-draft-n-max 2 \
-    -c 16384 -ngl 99 -fa on -np 1 --jinja --reasoning-format deepseek \
+    -c 65536 -ngl 99 -fa on -np 1 -ctk q8_0 -ctv q8_0 --jinja --reasoning-format deepseek \
     --temp 0.6 --top-p 0.95 --top-k 20 --host 127.0.0.1 --port 8089
   ```
 
@@ -123,7 +165,7 @@ brew install llama.cpp
   ```bash
   llama-server -m ~/Models/qwen3.6-35b-a3b-mtp-q8/Qwen3.6-35B-A3B-Q8_0.gguf \
     --spec-type draft-mtp --spec-draft-n-max 1 \
-    -c 16384 -ngl 99 -fa on -np 1 --jinja --reasoning-format deepseek \
+    -c 65536 -ngl 99 -fa on -np 1 -ctk q8_0 -ctv q8_0 --jinja --reasoning-format deepseek \
     --temp 0.6 --top-p 0.95 --top-k 20 --host 127.0.0.1 --port 8089
   ```
 
