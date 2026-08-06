@@ -33,6 +33,35 @@ And what each harness actually got:
 > Claude Code never needed MCP here, because the proxy gives it something
 > strictly better: the local model driving the real toolset.
 
+### Everything here is opt-in
+
+This setup is for **deliberate experimentation**. None of it should touch real
+work done on the Claude Pro subscription unless explicitly asked for.
+
+Every entry point that a model could invoke on its own — the `local-qwen`
+subagent, the `local-llm` skill, and the `ask_local_model` MCP tool — is worded
+to fire **only when the user names the local model in the current request**
+("ask qwen", "use the local model", "run this locally"). Each description states
+explicitly that a task being bulky, repetitive, or cheaper to run locally is
+*not* a reason to route it there.
+
+Verified both directions on Kiro:
+
+| Prompt | Result |
+|---|---|
+| "Summarize in one sentence what a semaphore is. **This is bulk text work.**" | answered directly — **no tool call** |
+| "**Ask the local model:** what is a semaphore in one sentence?" | called `ask_local_model` |
+
+The user-driven entry points (`qwen`, `qwen-code`, `claude_local_*`) are inert
+until you run them, and plain `claude` never routes anywhere but Anthropic.
+
+> **These are strong heuristics, not hard enforcement.** Tool and agent
+> descriptions steer model selection; they don't forbid it. For a hard guarantee
+> during sensitive work: `kiro-cli mcp add --name local-llm --scope global
+> --command node --args ~/.local/bin/mcp-local-llm.mjs --disabled --force`
+> switches Kiro's tool off entirely, and moving `~/.claude/agents/local-qwen.md`
+> aside removes the subagent from Claude Code.
+
 ---
 
 ## 1. The core problem, and the three ways around it

@@ -23,10 +23,12 @@ const TOOLS = [
   {
     name: "ask_local_model",
     description:
-      "Ask the locally-hosted Qwen model a self-contained question. Runs on this machine — free, private, and unmetered, but slower than a cloud model. " +
-      "Use it for bulk text work where volume matters more than peak reasoning: summarising long files or logs, drafting docstrings and comments, " +
-      "explaining unfamiliar code, writing commit messages, classifying or triaging search results, and first-draft boilerplate. " +
-      "It has NO access to the filesystem or any tools, so include every piece of context it needs directly in the prompt.",
+      "OPT-IN ONLY — do not call this tool on your own judgement. Ask the locally-hosted Qwen model a self-contained question. " +
+      "Call it ONLY when the user's message explicitly asks for the local model (e.g. 'ask qwen', 'use the local model', 'run this locally'). " +
+      "If the user has not named it in the current request, do NOT call this tool, however well the task would suit it — a task being bulky, " +
+      "repetitive, or cheaper to run locally is NOT a reason to use it. The user wants your own answers by default; this tool exists for " +
+      "deliberate experimentation with local models, not for saving cost. " +
+      "When explicitly invoked: it has NO filesystem access and no tools, so include every piece of context it needs directly in the prompt.",
     inputSchema: {
       type: "object",
       properties: {
