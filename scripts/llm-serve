@@ -1,0 +1,196 @@
+#!/usr/bin/env bash
+# llm-serve — start/stop/switch the local Qwen stack (llama-server + Anthropic proxy).
+#
+# Serving flags come from the local_llm_bench sweep: the draft depth for each
+# model is the measured peak, not a guess.
+#
+#   llm-serve start [35b|27b]   start (or switch to) a model, plus the proxy
+#   llm-serve stop              stop everything
+#   llm-serve status            what's running, and whether it answers
+#   llm-serve restart [model]   stop then start
+#   llm-serve logs [server|proxy]  tail a log
+#   llm-serve which             the currently-loaded model
+
+set -euo pipefail
+
+STATE_DIR="${HOME}/.local/state/local-llm"
+LOG_DIR="${STATE_DIR}/logs"
+mkdir -p "$LOG_DIR"
+
+SERVER_PID="${STATE_DIR}/server.pid"
+PROXY_PID="${STATE_DIR}/proxy.pid"
+CURRENT="${STATE_DIR}/current"
+SERVER_LOG="${LOG_DIR}/server.log"
+PROXY_LOG="${LOG_DIR}/proxy.log"
+
+LLAMA_PORT="${LLAMA_PORT:-8089}"
+PROXY_PORT="${PROXY_PORT:-8790}"
+CTX="${LLM_CTX:-262144}"
+
+# Thinking is unlimited by default — these are reasoning models and the quality
+# comes from letting them finish. The proxy's SSE heartbeat is what keeps a long
+# reasoning phase from looking like a dead connection, so no cap is needed here.
+# Set LLM_THINK_BUDGET to a token count if you ever want to bound latency.
+THINK_BUDGET="${LLM_THINK_BUDGET:--1}"
+
+# The proxy lives next to this script.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROXY_JS="${SCRIPT_DIR}/llm-proxy.mjs"
+
+# --- model registry (Q8 GGUFs, MTP draft depth = benchmarked peak) ------------
+model_path() {
+  case "$1" in
+    35b) echo "${HOME}/Models/qwen3.6-35b-a3b-mtp-q8/Qwen3.6-35B-A3B-Q8_0.gguf" ;;
+    27b) echo "${HOME}/Models/qwen3.6-27b-mtp-q8/Qwen3.6-27B-Q8_0.gguf" ;;
+    *) return 1 ;;
+  esac
+}
+
+# Peak-throughput draft depth per model, measured over the sweep:
+#   35B A3B: n=1 -> 67.2 tok/s (78% accept)   27B: n=2 -> 17.7 tok/s (68% accept)
+draft_n() {
+  case "$1" in
+    35b) echo 1 ;;
+    27b) echo 2 ;;
+  esac
+}
+
+is_running() { # pidfile
+  [[ -f "$1" ]] && kill -0 "$(cat "$1")" 2>/dev/null
+}
+
+stop_pidfile() { # pidfile label
+  if is_running "$1"; then
+    local pid; pid="$(cat "$1")"
+    echo "  stopping $2 (pid $pid)"
+    kill "$pid" 2>/dev/null || true
+    for _ in $(seq 1 50); do
+      kill -0 "$pid" 2>/dev/null || break
+      sleep 0.2
+    done
+    kill -9 "$pid" 2>/dev/null || true
+  fi
+  rm -f "$1"
+}
+
+wait_healthy() {
+  for _ in $(seq 1 300); do
+    if curl -sf "http://127.0.0.1:${LLAMA_PORT}/health" >/dev/null 2>&1; then return 0; fi
+    if ! is_running "$SERVER_PID"; then
+      echo "  llama-server died on startup — last lines:" >&2
+      tail -20 "$SERVER_LOG" >&2
+      return 1
+    fi
+    sleep 1
+  done
+  echo "  timed out waiting for llama-server to become healthy" >&2
+  return 1
+}
+
+start_proxy() {
+  if is_running "$PROXY_PID"; then return 0; fi
+  MODEL=qwen-local \
+  UPSTREAM="http://127.0.0.1:${LLAMA_PORT}/v1" \
+  PORT="${PROXY_PORT}" \
+    nohup node "$PROXY_JS" >"$PROXY_LOG" 2>&1 &
+  echo $! >"$PROXY_PID"
+  sleep 1
+  if is_running "$PROXY_PID"; then
+    echo "  proxy    up on http://127.0.0.1:${PROXY_PORT}  (Anthropic API)"
+  else
+    echo "  proxy failed to start — see $PROXY_LOG" >&2
+    tail -10 "$PROXY_LOG" >&2
+  fi
+}
+
+cmd_start() {
+  local model="${1:-35b}"
+  local path
+  if ! path="$(model_path "$model")"; then
+    echo "unknown model '$model' (expected 35b or 27b)" >&2
+    exit 1
+  fi
+  if [[ ! -f "$path" ]]; then
+    echo "model file not found: $path" >&2
+    echo "download it first — see local-setup/README.md section 5.2" >&2
+    exit 1
+  fi
+
+  # Only one model fits in 64 GB at Q8, so switching means replacing.
+  if is_running "$SERVER_PID"; then
+    local cur; cur="$(cat "$CURRENT" 2>/dev/null || echo '?')"
+    if [[ "$cur" == "$model" ]]; then
+      echo "$model already serving on :${LLAMA_PORT}"
+      start_proxy
+      return 0
+    fi
+    echo "switching ${cur} -> ${model}"
+    stop_pidfile "$SERVER_PID" "llama-server"
+  fi
+
+  echo "starting qwen3.6-${model} (Q8, MTP draft-n=$(draft_n "$model"), ctx ${CTX}, think budget ${THINK_BUDGET})"
+  nohup llama-server \
+    -m "$path" \
+    --spec-type draft-mtp --spec-draft-n-max "$(draft_n "$model")" \
+    -c "$CTX" -ngl 99 -fa on -np 1 \
+    -ctk q8_0 -ctv q8_0 \
+    --jinja --reasoning-format deepseek \
+    --reasoning-budget "$THINK_BUDGET" \
+    --temp 0.6 --top-p 0.95 --top-k 20 \
+    -a qwen-local \
+    --host 127.0.0.1 --port "${LLAMA_PORT}" --no-webui \
+    >"$SERVER_LOG" 2>&1 &
+  echo $! >"$SERVER_PID"
+  echo "$model" >"$CURRENT"
+
+  wait_healthy || exit 1
+  echo "  llama-server up on http://127.0.0.1:${LLAMA_PORT}  (OpenAI API)"
+  start_proxy
+}
+
+cmd_stop() {
+  echo "stopping local LLM stack"
+  stop_pidfile "$PROXY_PID" "proxy"
+  stop_pidfile "$SERVER_PID" "llama-server"
+  rm -f "$CURRENT"
+  echo "  done"
+}
+
+cmd_status() {
+  local model; model="$(cat "$CURRENT" 2>/dev/null || echo '-')"
+  if is_running "$SERVER_PID"; then
+    local rss
+    rss="$(ps -o rss= -p "$(cat "$SERVER_PID")" | awk '{printf "%.1f GB", $1/1048576}')"
+    echo "llama-server  running   model=qwen3.6-${model}  port=${LLAMA_PORT}  rss=${rss}"
+  else
+    echo "llama-server  stopped"
+  fi
+
+  if is_running "$PROXY_PID"; then
+    echo "proxy         running   port=${PROXY_PORT}"
+  else
+    echo "proxy         stopped"
+  fi
+
+  if curl -sf "http://127.0.0.1:${LLAMA_PORT}/health" >/dev/null 2>&1; then
+    echo "health        ok"
+  else
+    echo "health        not responding"
+  fi
+}
+
+case "${1:-status}" in
+  start)   shift; cmd_start "${1:-35b}" ;;
+  stop)    cmd_stop ;;
+  restart) shift; cmd_stop; cmd_start "${1:-35b}" ;;
+  status)  cmd_status ;;
+  which)   cat "$CURRENT" 2>/dev/null || echo "nothing loaded" ;;
+  logs)
+    case "${2:-server}" in
+      proxy)  tail -f "$PROXY_LOG" ;;
+      *)      tail -f "$SERVER_LOG" ;;
+    esac ;;
+  *)
+    grep '^#' "$0" | sed -n '2,20p' | sed 's/^# \?//'
+    exit 1 ;;
+esac

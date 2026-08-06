@@ -1,0 +1,150 @@
+#!/usr/bin/env node
+/**
+ * qwen — one-shot prompt against the local llama-server.
+ *
+ * The universal integration point: every harness has a shell tool, so this works
+ * identically from Claude Code (Bash), Antigravity (run_command), and Kiro
+ * (execute_bash) without any of them needing to support a custom endpoint.
+ *
+ * Usage:
+ *   qwen "explain what this regex does: ^\\d{3}-\\d{4}$"
+ *   qwen -f src/auth.ts "summarise this module in 5 bullets"
+ *   git diff | qwen "write a conventional-commit message for this diff"
+ *   qwen --think "why would this deadlock?" -f worker.go
+ *
+ * Options:
+ *   -f, --file PATH     attach a file's contents (repeatable)
+ *   -s, --system TEXT   system prompt
+ *   -t, --think         enable extended reasoning (default off — it costs
+ *                       roughly 10-20x the tokens, so only for hard analysis)
+ *   -m, --max-tokens N  cap generated tokens (default 4096)
+ *       --temp N        sampling temperature (default 0.6)
+ *       --raw           print without the trailing newline fixups
+ */
+
+import { readFileSync } from "node:fs";
+
+const UPSTREAM = (process.env.UPSTREAM || "http://127.0.0.1:8089/v1").replace(/\/$/, "");
+const MODEL = process.env.MODEL || "qwen-local";
+
+function usage(code = 0) {
+  const src = readFileSync(new URL(import.meta.url), "utf8");
+  const doc = src.split("*/")[0].replace(/^\/\*\*\n/, "").replace(/^ \* ?/gm, "");
+  process.stdout.write(doc.trim() + "\n");
+  process.exit(code);
+}
+
+const args = process.argv.slice(2);
+if (!args.length && process.stdin.isTTY) usage(1);
+
+const opts = { files: [], think: false, maxTokens: 4096, temp: 0.6, system: null, raw: false };
+const promptParts = [];
+
+for (let i = 0; i < args.length; i++) {
+  const a = args[i];
+  switch (a) {
+    case "-h": case "--help": usage(0); break;
+    case "-f": case "--file": opts.files.push(args[++i]); break;
+    case "-s": case "--system": opts.system = args[++i]; break;
+    case "-t": case "--think": opts.think = true; break;
+    case "--no-think": opts.think = false; break;
+    case "-m": case "--max-tokens": opts.maxTokens = Number(args[++i]); break;
+    case "--temp": opts.temp = Number(args[++i]); break;
+    case "--raw": opts.raw = true; break;
+    default:
+      if (a.startsWith("-") && a.length > 1) {
+        console.error(`qwen: unknown option ${a}`);
+        process.exit(2);
+      }
+      promptParts.push(a);
+  }
+}
+
+async function readStdin() {
+  if (process.stdin.isTTY) return "";
+  const chunks = [];
+  for await (const c of process.stdin) chunks.push(c);
+  return Buffer.concat(chunks).toString("utf8");
+}
+
+const piped = await readStdin();
+let prompt = promptParts.join(" ");
+
+for (const f of opts.files) {
+  let body;
+  try {
+    body = readFileSync(f, "utf8");
+  } catch (e) {
+    console.error(`qwen: cannot read ${f}: ${e.message}`);
+    process.exit(2);
+  }
+  prompt += `\n\n--- ${f} ---\n${body}`;
+}
+if (piped.trim()) prompt += `\n\n--- input ---\n${piped}`;
+
+if (!prompt.trim()) {
+  console.error("qwen: empty prompt");
+  process.exit(2);
+}
+
+const messages = [];
+if (opts.system) messages.push({ role: "system", content: opts.system });
+messages.push({ role: "user", content: prompt });
+
+const body = {
+  model: MODEL,
+  messages,
+  max_tokens: opts.maxTokens,
+  temperature: opts.temp,
+  top_p: 0.95,
+  stream: true,
+};
+if (!opts.think) body.chat_template_kwargs = { enable_thinking: false };
+
+let res;
+try {
+  res = await fetch(`${UPSTREAM}/chat/completions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+} catch (e) {
+  console.error(`qwen: cannot reach llama-server at ${UPSTREAM} (${e.message})`);
+  console.error("      start it with:  llm-serve start");
+  process.exit(1);
+}
+
+if (!res.ok) {
+  console.error(`qwen: llama-server returned ${res.status}: ${(await res.text()).slice(0, 300)}`);
+  process.exit(1);
+}
+
+// Stream so long generations show progress rather than hanging silently.
+const decoder = new TextDecoder();
+let buf = "";
+let wroteAny = false;
+
+for await (const chunk of res.body) {
+  buf += decoder.decode(chunk, { stream: true });
+  const lines = buf.split("\n");
+  buf = lines.pop() ?? "";
+  for (const line of lines) {
+    const t = line.trim();
+    if (!t.startsWith("data:")) continue;
+    const payload = t.slice(5).trim();
+    if (!payload || payload === "[DONE]") continue;
+    let evt;
+    try {
+      evt = JSON.parse(payload);
+    } catch {
+      continue;
+    }
+    const delta = evt.choices?.[0]?.delta;
+    if (delta?.content) {
+      process.stdout.write(delta.content);
+      wroteAny = true;
+    }
+  }
+}
+
+if (wroteAny && !opts.raw) process.stdout.write("\n");
