@@ -478,6 +478,9 @@ when being wrong is cheap to detect.
 | Tool calls never fire | `--jinja` missing — without it the chat template can't emit tool calls. |
 | `couldn't bind HTTP server socket` when switching models | The proxy's keep-alive connections to the old llama-server linger in `TIME_WAIT` on `:8089`, and llama-server binds with `SO_REUSEPORT` (not `SO_REUSEADDR`), so it cannot rebind over them. `llm-serve` now stops the proxy *before* the server and waits for the port to clear; if you hit this driving llama-server by hand, wait ~30 s. |
 | WebSearch returns nothing / the model says it can't search | See §7. Check `llm-serve logs proxy` for a `web_search` line: no line means the tool never reached the proxy, a line plus `ERROR:` means the backend failed — DuckDuckGo rate-limits, so switch `SEARCH_BACKEND`. |
+| A turn takes *minutes*, and `llm-serve logs` shows prefill at single-digit tok/s | Memory pressure. A 27–38 GB model on a 64 GB machine leaves little headroom, and macOS compresses or evicts model pages whenever Spotlight, `contactsd` and friends get busy. Generation barely notices (it is bandwidth-light per token) but prefill sweeps every weight per batch, so it falls off a cliff — measured on an *idle* server: 196 → 4 tok/s. `llm-serve` now passes `--mlock` to pin the weights; the same run then held 79 tok/s. `LLM_MLOCK=0` opts out. |
+| The first turn of every session re-prefills ~20k tokens | Expected, and not fixable from here. The stable prefix (system prompt + tool schemas) is ~16.6k tokens, but the harness appends a static agent/skills catalog *after* your prompt — so a new prompt invalidates everything from that point on. Qwen 3.6 needs a context checkpoint at or below the divergence to restore, and checkpoints only ever exist above it, so llama.cpp re-processes the lot. Within a session it is fine: turn 2 onwards appends to a matching prefix and comes back in ~2 s. Keep sessions open rather than restarting them. |
+| Two sessions at once, or a stray `claude -p` left running | Fatal to latency. `-np 1` means one slot, so a forgotten headless client interleaves with your real request and both crawl. `ps -eo pid,etime,command \| grep "claude -p"` finds them. |
 
 ---
 
@@ -517,3 +520,12 @@ All of it is reproducible on a new machine with `./setup.sh` from this repo.
   can rate-limit. Set `SEARCH_BACKEND=brave` or `searxng` for something durable.
 - **Server-side tools other than web search and fetch are dropped** — code
   execution and computer use have no local stand-in.
+- **Cross-session prompt caching does not work**, for the structural reason in
+  §10: the harness puts a static ~2.5k-token catalog *after* the varying user
+  prompt, and the model's attention makes a partial-prefix restore impossible.
+  Budget one full prefill per session; everything after that is cached.
+- **The 27B is prefill-bound, not generation-bound.** ~20k tokens of harness
+  prompt at ~275 tok/s on an unloaded machine is ~75 s before the first token.
+  The 35B A3B MoE prefills the same prompt roughly 3x faster (measured 25 s vs
+  77 s cold) — pick it when session start-up latency matters more than peak
+  reasoning quality.

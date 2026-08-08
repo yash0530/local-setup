@@ -14,6 +14,7 @@
  *   PROXY_THINK=0     disable the model's reasoning phase (default: ON)
  *   EMIT_THINKING=1   surface reasoning_content as visible text
  *   DEBUG=1           log every translated request to stderr
+ *   DUMP_DIR=<dir>    write every translated request to a file (see below)
  *
  * Web tools (WebSearch / WebFetch):
  *   WEB_TOOLS=0       don't stand in for them at all
@@ -36,6 +37,7 @@
  */
 
 import http from "node:http";
+import fs from "node:fs";
 import { randomUUID } from "node:crypto";
 
 const UPSTREAM = (process.env.UPSTREAM || "http://127.0.0.1:8089/v1").replace(/\/$/, "");
@@ -67,6 +69,13 @@ const MAX_PROXY_HOPS = Number(process.env.MAX_PROXY_HOPS || 4);
 const UA =
   process.env.WEB_UA ||
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
+
+// Writes each translated upstream request to a file. The reason this is worth
+// keeping: llama-server's prefix cache is all-or-nothing in practice, so when a
+// session re-prefills 20k tokens the only way to find out *why* is to diff two
+// consecutive payloads and see what moved.
+const DUMP_DIR = process.env.DUMP_DIR || "";
+if (DUMP_DIR) fs.mkdirSync(DUMP_DIR, { recursive: true });
 
 const log = (...a) => console.error("[llm-proxy]", ...a);
 const debug = (...a) => DEBUG && log(...a);
@@ -928,6 +937,19 @@ const server = http.createServer(async (req, res) => {
     `${body.model} -> ${MODEL}  msgs=${oaiReq.messages.length} tools=${oaiReq.tools?.length ?? 0}` +
       ` proxy_tools=${[...proxyTools].join(",") || "none"} stream=${oaiReq.stream}`,
   );
+
+  // Note the handler shadows `path` with the request path, so no node:path here.
+  // Wrapped: a debug aid must never be able to take the whole proxy down, and an
+  // unhandled throw in this async handler would do exactly that.
+  if (DUMP_DIR) {
+    const f = `${DUMP_DIR}/req-${Date.now()}-${randomUUID().slice(0, 8)}.json`;
+    try {
+      fs.writeFileSync(f, JSON.stringify(oaiReq, null, 2));
+      log(`dumped request -> ${f}`);
+    } catch (e) {
+      log(`could not write dump ${f}: ${e.message}`);
+    }
+  }
 
   try {
     if (oaiReq.stream) {

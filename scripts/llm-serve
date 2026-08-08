@@ -175,11 +175,33 @@ cmd_start() {
 
   wait_port_free "$LLAMA_PORT" || exit 1
 
-  echo "starting qwen3.6-${model} (Q8, MTP draft-n=$(draft_n "$model"), ctx ${CTX}, think budget ${THINK_BUDGET})"
+  # LLM_SPEC=0 serves without speculative decoding — useful for benchmarking, or
+  # if a draft head ever misbehaves. Measured: it does NOT change the first-turn
+  # prefill cost, which is bounded by prompt processing, not generation.
+  # A 27-38 GB model on a 64 GB machine leaves little headroom, and macOS will
+  # happily compress/evict model pages when Spotlight, contactsd and friends get
+  # busy. Generation barely notices, but prefill sweeps every weight in large
+  # batches, so it collapses — measured here from 196 tok/s to 4 tok/s on an
+  # otherwise idle server. mlock pins the weights so that cannot happen.
+  # LLM_MLOCK=0 to opt out.
+  local mlock=(--mlock)
+  [[ "${LLM_MLOCK:-1}" == "0" ]] && mlock=()
+
+  local spec=(--spec-type draft-mtp --spec-draft-n-max "$(draft_n "$model")")
+  local spec_label="MTP draft-n=$(draft_n "$model")"
+  if [[ "${LLM_SPEC:-1}" == "0" ]]; then
+    spec=()
+    spec_label="MTP off"
+  fi
+
+  echo "starting qwen3.6-${model} (Q8, ${spec_label}, ctx ${CTX}, think budget ${THINK_BUDGET})"
+  # ${a[@]+"${a[@]}"}, not "${a[@]}": macOS ships bash 3.2, where expanding an
+  # empty array under `set -u` is an unbound-variable error.
   nohup llama-server \
     -m "$path" \
-    --spec-type draft-mtp --spec-draft-n-max "$(draft_n "$model")" \
+    ${spec[@]+"${spec[@]}"} \
     -c "$CTX" -ngl 99 -fa on -np 1 \
+    ${mlock[@]+"${mlock[@]}"} \
     -ctk q8_0 -ctv q8_0 \
     --jinja --reasoning-format deepseek \
     --reasoning-budget "$THINK_BUDGET" \
