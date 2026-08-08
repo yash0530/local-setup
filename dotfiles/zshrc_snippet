@@ -3,8 +3,31 @@
 # ==============================================================================
 
 # Aliases with dangerous flag (skip permission prompts)
-alias claude="claude --dangerously-skip-permissions"
 alias agy="agy --dangerously-skip-permissions"
+
+# Claude dispatcher. This replaces the old `alias claude=...`: an alias cannot
+# take a subcommand, so routing `claude local <model>` to the local stack needs a
+# function. `command claude` bypasses this function, so it does not recurse.
+#   claude                   Pro subscription (default)
+#   claude local qwen36_27   local 27B    ·  claude local qwen36_35   local 35B
+#   claude local             whatever model is already resident
+#   claude subagent          Pro + the opt-in local delegation subagent
+# Every branch forwards "$@", so flags survive: `claude -p "..."`,
+# `claude local qwen36_27 --resume`, and so on.
+claude() {
+  case "${1:-}" in
+    local)
+      shift
+      case "${1:-}" in
+        qwen36_27) shift; qwen-code --model 27b "$@" ;;
+        qwen36_35) shift; qwen-code --model 35b "$@" ;;
+        *)         qwen-code "$@" ;;
+      esac
+      ;;
+    subagent) shift; claude-local-subagent "$@" ;;
+    *)        command claude --dangerously-skip-permissions "$@" ;;
+  esac
+}
 
 # Claude Code Auto-Resume Daemon
 alias claude_resume="claude-resume"
@@ -50,7 +73,9 @@ alias llama_qwen_36_35b="llama-cli -m ~/Models/qwen3.6-35b-a3b-mtp-q8/Qwen3.6-35
 alias sleep_no="sudo pmset -a disablesleep 1"
 alias sleep_ok="sudo pmset -a disablesleep 0"
 
-# Kiro CLI pre and post blocks (Keep at top/bottom of .zshrc respectively)
-# Note: Uncomment these if kiro-cli is installed and configured on this machine
-# [[ -f "${HOME}/Library/Application Support/kiro-cli/shell/zshrc.pre.zsh" ]] && builtin source "${HOME}/Library/Application Support/kiro-cli/shell/zshrc.pre.zsh"
-# [[ -f "${HOME}/Library/Application Support/kiro-cli/shell/zshrc.post.zsh" ]] && builtin source "${HOME}/Library/Application Support/kiro-cli/shell/zshrc.post.zsh"
+# Kiro CLI pre/post blocks are NOT part of this snippet. Kiro wants its post
+# block to be the last thing in ~/.zshrc, and this snippet gets appended to the
+# end — so installing it after Kiro leaves the post block stranded in the middle.
+# If kiro-cli is installed, move its post block back to the bottom of ~/.zshrc
+# after running setup.sh:
+#   [[ -f "${HOME}/Library/Application Support/kiro-cli/shell/zshrc.post.zsh" ]] && builtin source "${HOME}/Library/Application Support/kiro-cli/shell/zshrc.post.zsh"
