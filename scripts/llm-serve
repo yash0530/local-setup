@@ -8,6 +8,7 @@
 #   llm-serve stop              stop everything
 #   llm-serve status            what's running, and whether it answers
 #   llm-serve restart [model]   stop then start
+#   llm-serve restart-proxy     reload just the proxy (keeps the model resident)
 #   llm-serve logs [server|proxy]  tail a log
 #   llm-serve which             the currently-loaded model
 
@@ -68,9 +69,46 @@ stop_pidfile() { # pidfile label
       kill -0 "$pid" 2>/dev/null || break
       sleep 0.2
     done
-    kill -9 "$pid" 2>/dev/null || true
+    # SIGKILL is asynchronous: tearing down ~35 GB of Metal buffers takes the
+    # kernel a moment, and the fds (including the listening socket) are only
+    # released when the process actually reaps. Wait for that, don't assume it.
+    if kill -0 "$pid" 2>/dev/null; then
+      kill -9 "$pid" 2>/dev/null || true
+      for _ in $(seq 1 50); do
+        kill -0 "$pid" 2>/dev/null || break
+        sleep 0.2
+      done
+    fi
   fi
   rm -f "$1"
+}
+
+# True while any TCP socket still holds the port — including orphaned TIME_WAIT
+# sockets, which belong to no process and so never show up in `lsof`.
+port_in_use() { # port
+  netstat -an -p tcp 2>/dev/null | awk -v suffix=".$1" '
+    NR > 2 && length($4) > length(suffix) &&
+    substr($4, length($4) - length(suffix) + 1) == suffix { found = 1 }
+    END { exit !found }'
+}
+
+# httplib (what llama-server binds with) sets SO_REUSEPORT on macOS, not
+# SO_REUSEADDR — so unlike most servers it cannot bind over a lingering
+# TIME_WAIT socket, and a switch fails with "couldn't bind HTTP server socket".
+# Stopping the proxy first (below) normally keeps :8089 clean, but a client that
+# died mid-request can still leave one behind. Wait it out rather than race it.
+wait_port_free() { # port
+  port_in_use "$1" || return 0
+  echo "  waiting for port $1 to clear"
+  for _ in $(seq 1 60); do
+    sleep 0.5
+    port_in_use "$1" || return 0
+  done
+  echo "  port $1 still held after 30s:" >&2
+  netstat -an -p tcp 2>/dev/null | awk -v suffix=".$1" '
+    NR > 2 && length($4) > length(suffix) &&
+    substr($4, length($4) - length(suffix) + 1) == suffix' >&2
+  return 1
 }
 
 wait_healthy() {
@@ -125,8 +163,17 @@ cmd_start() {
       return 0
     fi
     echo "switching ${cur} -> ${model}"
+    # Order matters. The proxy holds keep-alive connections to llama-server, and
+    # whichever side closes first is the side that lands in TIME_WAIT. Killing
+    # the server first strands those sockets on :${LLAMA_PORT} and the
+    # replacement cannot bind; closing the proxy first puts them on the proxy's
+    # ephemeral ports instead, leaving :${LLAMA_PORT} free. It gets restarted at
+    # the end of this function.
+    stop_pidfile "$PROXY_PID" "proxy"
     stop_pidfile "$SERVER_PID" "llama-server"
   fi
+
+  wait_port_free "$LLAMA_PORT" || exit 1
 
   echo "starting qwen3.6-${model} (Q8, MTP draft-n=$(draft_n "$model"), ctx ${CTX}, think budget ${THINK_BUDGET})"
   nohup llama-server \
@@ -185,6 +232,10 @@ case "${1:-status}" in
   start)   shift; cmd_start "${1:-35b}" ;;
   stop)    cmd_stop ;;
   restart) shift; cmd_stop; cmd_start "${1:-35b}" ;;
+  # Picking up a proxy edit shouldn't cost a 37 GB model reload.
+  restart-proxy)
+    stop_pidfile "$PROXY_PID" "proxy"
+    start_proxy ;;
   status)  cmd_status ;;
   which)   cat "$CURRENT" 2>/dev/null || echo "nothing loaded" ;;
   logs)
