@@ -95,6 +95,7 @@ alias claude_resume_logs="claude-resume logs"
 ```bash
 llm_start / llm_stop / llm_status / llm_logs   # manage the local stack
 llm_use_27 / llm_use_35                        # switch resident model
+llm-serve restart-proxy                        # reload the proxy, model stays resident
 
 # Claude Code running entirely on local weights
 claude_local_qwen_3.6_27   # Claude Code on Qwen 3.6 27B (dense, higher quality)
@@ -161,6 +162,11 @@ Silicon. With one user at the keyboard, keep MTP and let requests queue.
 > ```
 >
 > Plain `claude` is unaffected and still uses your Claude Pro subscription.
+>
+> `WebSearch`/`WebFetch` work on the local stack too — they are Anthropic
+> *server-side* tools, so the proxy executes them itself rather than letting the
+> model call into a void. Keyless by default; see
+> [LOCAL_LLM_HARNESS.md §7](LOCAL_LLM_HARNESS.md).
 
 ### 5.1 Serving Parameters & Launch Commands
 

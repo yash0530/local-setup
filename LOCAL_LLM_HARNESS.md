@@ -145,7 +145,7 @@ llm-serve stop             # frees ~36 GB
 
 `claude` on its own is untouched and still uses your **Claude Pro subscription**.
 No Anthropic env vars are exported globally — they are scoped inside the
-`qwen-code` process only. (See §7 if you ever see local traffic leak.)
+`qwen-code` process only. (See §10 if you ever see local traffic leak.)
 
 ---
 
@@ -359,7 +359,60 @@ qwen --think "why would this deadlock?" -f worker.go    # on — real analysis
 
 ---
 
-## 7. Concurrency: why not vLLM?
+## 7. Web search and fetch
+
+Claude Code's `WebSearch` and `WebFetch` are **Anthropic server-side tools**.
+They arrive as versioned entries in `tools` — `web_search_20260209`,
+`web_fetch_20250910` — carrying a `name` but no `input_schema`, because the API
+is expected to know their shape and to *execute them itself*, feeding the
+results back to the model before it ever replies.
+
+Point the harness at a local model and nobody is left to execute them. The old
+tool filter made this worse rather than obvious: it dropped server tools with
+`filter(t => t.name)`, but a server tool *does* have a name, so `web_search`
+survived the filter and reached the model as a parameterless function whose
+calls went nowhere. Search silently did nothing.
+
+The proxy now stands in for the API and runs them:
+
+```
+model emits   web_search{query}      ← intercepted here; never reaches the harness
+proxy runs    the search
+proxy appends assistant tool_call + tool result to the conversation
+proxy re-prompts the model, streaming the next round into the SAME message
+```
+
+The harness sees one continuous reply and never learns a search happened —
+which is exactly how the server-side tools behave against the real API. Since a
+round can end in either kind of tool call, tool calls are buffered until the
+round ends; only then can the proxy tell which are its own to run and which
+belong to the harness.
+
+| Env | Default | What |
+|---|---|---|
+| `WEB_TOOLS` | on | `WEB_TOOLS=0` stops standing in — the tools are then dropped, not offered |
+| `SEARCH_BACKEND` | `duckduckgo` | `duckduckgo` (keyless) · `brave` · `searxng` |
+| `BRAVE_API_KEY` | — | required for `SEARCH_BACKEND=brave` |
+| `SEARXNG_URL` | — | required for `SEARCH_BACKEND=searxng` |
+| `SEARCH_RESULTS` | 8 | results per search |
+| `FETCH_MAX_CHARS` | 20000 | cap on a fetched page |
+| `MAX_PROXY_HOPS` | 4 | search→answer rounds per turn; afterwards the tools are withdrawn so the model must answer |
+
+The default backend scrapes DuckDuckGo's HTML endpoint: no key, so it works on a
+fresh machine with nothing configured. It is scraped HTML though, so it can
+rate-limit or change shape. Switch backends without reloading the model:
+
+```bash
+SEARCH_BACKEND=brave BRAVE_API_KEY=... llm-serve restart-proxy
+```
+
+Server-side tools the proxy *can't* stand in for (code execution, computer use)
+are dropped rather than forwarded — offering the model a tool that nothing will
+ever execute just produces dead tool calls.
+
+---
+
+## 8. Concurrency: why not vLLM?
 
 `-np 1` means one request at a time, so a `qwen` call fires while a `qwen-code`
 session is mid-turn will queue behind it. The obvious thought is vLLM for real
@@ -392,7 +445,7 @@ speculators are both first-class.
 
 ---
 
-## 8. What to actually send local
+## 9. What to actually send local
 
 The local models are free, private, and unmetered but slow. Route by whether
 volume matters more than peak reasoning.
@@ -411,7 +464,7 @@ when being wrong is cheap to detect.
 
 ---
 
-## 9. Troubleshooting
+## 10. Troubleshooting
 
 | Symptom | Cause / fix |
 |---|---|
@@ -423,10 +476,12 @@ when being wrong is cheap to detect.
 | Answers are slow but fine | Thinking is on. Drop `--think`. |
 | Switching models seems to hang | It's reading 28–38 GB from disk. Cold start ~40 s; `llm-serve logs` to watch. |
 | Tool calls never fire | `--jinja` missing — without it the chat template can't emit tool calls. |
+| `couldn't bind HTTP server socket` when switching models | The proxy's keep-alive connections to the old llama-server linger in `TIME_WAIT` on `:8089`, and llama-server binds with `SO_REUSEPORT` (not `SO_REUSEADDR`), so it cannot rebind over them. `llm-serve` now stops the proxy *before* the server and waits for the port to clear; if you hit this driving llama-server by hand, wait ~30 s. |
+| WebSearch returns nothing / the model says it can't search | See §7. Check `llm-serve logs proxy` for a `web_search` line: no line means the tool never reached the proxy, a line plus `ERROR:` means the backend failed — DuckDuckGo rate-limits, so switch `SEARCH_BACKEND`. |
 
 ---
 
-## 10. What's installed where
+## 11. What's installed where
 
 | Path | What |
 |---|---|
@@ -442,7 +497,7 @@ All of it is reproducible on a new machine with `./setup.sh` from this repo.
 
 ---
 
-## 11. Known limits
+## 12. Known limits
 
 - **Text only.** Neither model has vision; the proxy replaces image blocks with
   a note rather than failing.
@@ -457,3 +512,8 @@ All of it is reproducible on a new machine with `./setup.sh` from this repo.
   is why repeated turns in one session prefill faster.
 - **`count_tokens` is approximated** (chars ÷ 3.5). It only drives compaction
   timing, so an approximation is fine.
+- **Web search is best-effort.** The proxy stands in for Anthropic's server-side
+  search (§7), but the default backend scrapes DuckDuckGo without an API key and
+  can rate-limit. Set `SEARCH_BACKEND=brave` or `searxng` for something durable.
+- **Server-side tools other than web search and fetch are dropped** — code
+  execution and computer use have no local stand-in.
