@@ -361,19 +361,30 @@ qwen --think "why would this deadlock?" -f worker.go    # on — real analysis
 
 ## 7. Web search and fetch
 
-Claude Code's `WebSearch` and `WebFetch` are **Anthropic server-side tools**.
-They arrive as versioned entries in `tools` — `web_search_20260209`,
-`web_fetch_20250910` — carrying a `name` but no `input_schema`, because the API
-is expected to know their shape and to *execute them itself*, feeding the
-results back to the model before it ever replies.
+There are two different web-tool mechanisms in play, and only one of them is
+what Claude Code actually uses. Capturing a real request (`DUMP_DIR`) settles
+it — the binary contains `web_search_20260209` strings, but the harness sends:
 
-Point the harness at a local model and nobody is left to execute them. The old
-tool filter made this worse rather than obvious: it dropped server tools with
-`filter(t => t.name)`, but a server tool *does* have a name, so `web_search`
-survived the filter and reached the model as a parameterless function whose
-calls went nowhere. Search silently did nothing.
+```
+WebSearch   { query, allowed_domains?, blocked_domains? }   <- client-side, has input_schema
+WebFetch    { url, prompt }                                 <- client-side, has input_schema
+```
 
-The proxy now stands in for the API and runs them:
+Both are **client-side tools the harness runs itself**, not the API's
+server-side `web_search`. That distinction decides everything:
+
+- **`WebFetch` works as-is.** It fetches directly and summarises the page with
+  whatever small model is configured — which is the local one. Leave it alone.
+- **`WebSearch` does not.** Its implementation reaches Anthropic for the actual
+  search, so against a local endpoint it returns `Did 0 searches`. The call
+  looks like it ran; it just finds nothing.
+
+So the proxy intercepts `WebSearch` **by name** (`PROXY_HARNESS_TOOLS`,
+default `WebSearch`) and runs it here, forwarding the harness's own schema
+untouched so the model sees exactly the tool it expects. `WebFetch` is
+deliberately not in that list.
+
+The server-side path below is also handled, for any harness that does use it:
 
 ```
 model emits   web_search{query}      ← intercepted here; never reaches the harness
@@ -477,7 +488,8 @@ when being wrong is cheap to detect.
 | Switching models seems to hang | It's reading 28–38 GB from disk. Cold start ~40 s; `llm-serve logs` to watch. |
 | Tool calls never fire | `--jinja` missing — without it the chat template can't emit tool calls. |
 | `couldn't bind HTTP server socket` when switching models | The proxy's keep-alive connections to the old llama-server linger in `TIME_WAIT` on `:8089`, and llama-server binds with `SO_REUSEPORT` (not `SO_REUSEADDR`), so it cannot rebind over them. `llm-serve` now stops the proxy *before* the server and waits for the port to clear; if you hit this driving llama-server by hand, wait ~30 s. |
-| WebSearch returns nothing / the model says it can't search | See §7. Check `llm-serve logs proxy` for a `web_search` line: no line means the tool never reached the proxy, a line plus `ERROR:` means the backend failed — DuckDuckGo rate-limits, so switch `SEARCH_BACKEND`. |
+| `Did 0 searches` in the WebSearch tool output | The harness ran its *own* WebSearch, which needs Anthropic to do the searching. The proxy must intercept it by name instead — see §7. Confirm with `llm-serve logs proxy`: a `WebSearch {"query":...}` line means we ran it, no line means the call went to the harness. A line plus `ERROR:` means the backend failed, and DuckDuckGo rate-limits, so switch `SEARCH_BACKEND`. |
+| `Unable to connect to API (ConnectionRefused)` mid-session | The proxy died. It used to inherit the process group of whatever shell started it, so a Ctrl-C, a closed terminal or a script killed on timeout took it down — `nohup` only covers SIGHUP. `llm-serve` now starts both daemons via `detach()`, which puts them in their own session; verify with `ps -o pid,pgid -p $(cat ~/.local/state/local-llm/proxy.pid)` — pid should equal pgid. `llm-serve restart-proxy` brings it back without touching the model. |
 | A turn takes *minutes*, and `llm-serve logs` shows prefill at single-digit tok/s | Memory pressure. A 27–38 GB model on a 64 GB machine leaves little headroom, and macOS compresses or evicts model pages whenever Spotlight, `contactsd` and friends get busy. Generation barely notices (it is bandwidth-light per token) but prefill sweeps every weight per batch, so it falls off a cliff — measured on an *idle* server: 196 → 4 tok/s. `llm-serve` now passes `--mlock` to pin the weights; the same run then held 79 tok/s. `LLM_MLOCK=0` opts out. |
 | The first turn of every session re-prefills ~20k tokens | Expected, and not fixable from here. The stable prefix (system prompt + tool schemas) is ~16.6k tokens, but the harness appends a static agent/skills catalog *after* your prompt — so a new prompt invalidates everything from that point on. Qwen 3.6 needs a context checkpoint at or below the divergence to restore, and checkpoints only ever exist above it, so llama.cpp re-processes the lot. Within a session it is fine: turn 2 onwards appends to a matching prefix and comes back in ~2 s. Keep sessions open rather than restarting them. |
 | Two sessions at once, or a stray `claude -p` left running | Fatal to latency. `-np 1` means one slot, so a forgotten headless client interleaves with your real request and both crawl. `ps -eo pid,etime,command \| grep "claude -p"` finds them. |
@@ -504,11 +516,17 @@ All of it is reproducible on a new machine with `./setup.sh` from this repo.
 
 - **Text only.** Neither model has vision; the proxy replaces image blocks with
   a note rather than failing.
-- **Thinking blocks are dropped, not forwarded.** Anthropic `thinking` blocks
-  carry a signature the harness round-trips on the next turn, and a local model
-  can't produce a valid one — emitting them risks 400s on multi-turn
-  conversations. The model still reasons internally; set `EMIT_THINKING=1` on
-  the proxy to see it as plain text.
+- **Thinking is always on, and now visible.** The model reasons on every turn
+  (`--reasoning-budget -1`); `MAX_THINKING_TOKENS=0` in `qwen-code` does *not*
+  change that — it governs Anthropic-style extended thinking, while Qwen's
+  reasoning comes from its own chat template. The proxy emits real Anthropic
+  `thinking` blocks (`THINK_VIEW=native`, the default `llm-serve` sets), so
+  Claude Code renders the reasoning phase in its own UI rather than going quiet.
+  The signature those blocks carry is Anthropic's proof the reasoning is
+  unmodified; nothing validates it here, because the proxy *is* the server, and
+  the harness only round-trips it back to us where it is dropped. Verified end
+  to end. `THINK_VIEW=off|status|text` for no display, a compact heartbeat, or
+  the full chain of thought inline.
 - **One request at a time**, per `-np 1` above.
 - **Prompt caching doesn't apply.** There's no cross-request discount to exploit
   like the Anthropic API has; llama-server does keep a local prefix cache, which

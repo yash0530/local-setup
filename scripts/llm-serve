@@ -60,6 +60,27 @@ is_running() { # pidfile
   [[ -f "$1" ]] && kill -0 "$(cat "$1")" 2>/dev/null
 }
 
+# Run a daemon in its own session, detached from the caller's process group.
+#
+# `nohup ... &` alone is not enough: nohup only ignores SIGHUP, while the child
+# stays in the invoking shell's process group. Anything that signals that group
+# — Ctrl-C, a closing terminal, a script killed on timeout — takes the daemon
+# with it. That is exactly how the proxy has died: orphaned into a dead group.
+#
+# macOS ships no setsid(1), so borrow it from perl, which is always present.
+# exec keeps the pid, so $! is still the daemon's own pid. setsid() failing
+# because we are already a group leader is fine — that means we are already
+# isolated, which is the whole point.
+#
+# Always call as `detach cmd ... &`. The trailing & forks a subshell, and the
+# exec below replaces *that* subshell — so $! is the daemon's own pid rather
+# than a bash wrapper that merely waits on it. Without the exec, the pidfile
+# records the wrapper, stop_pidfile kills the wrapper, and the real daemon is
+# orphaned still holding its port.
+detach() { # cmd args...
+  exec perl -e 'use POSIX (); POSIX::setsid(); exec @ARGV or die "exec failed: $!"' -- "$@"
+}
+
 stop_pidfile() { # pidfile label
   if is_running "$1"; then
     local pid; pid="$(cat "$1")"
@@ -127,10 +148,15 @@ wait_healthy() {
 
 start_proxy() {
   if is_running "$PROXY_PID"; then return 0; fi
+  # The model reasons on every turn regardless; `native` means Claude Code
+  # renders that phase in its own thinking UI instead of the stream just going
+  # quiet for a minute. Verified: the harness parses the blocks and keeps the
+  # signature. THINK_VIEW=off|status|text to change it — see the proxy header.
   MODEL=qwen-local \
   UPSTREAM="http://127.0.0.1:${LLAMA_PORT}/v1" \
   PORT="${PROXY_PORT}" \
-    nohup node "$PROXY_JS" >"$PROXY_LOG" 2>&1 &
+  THINK_VIEW="${THINK_VIEW:-native}" \
+    detach node "$PROXY_JS" >"$PROXY_LOG" 2>&1 &
   echo $! >"$PROXY_PID"
   sleep 1
   if is_running "$PROXY_PID"; then
@@ -197,7 +223,7 @@ cmd_start() {
   echo "starting qwen3.6-${model} (Q8, ${spec_label}, ctx ${CTX}, think budget ${THINK_BUDGET})"
   # ${a[@]+"${a[@]}"}, not "${a[@]}": macOS ships bash 3.2, where expanding an
   # empty array under `set -u` is an unbound-variable error.
-  nohup llama-server \
+  detach llama-server \
     -m "$path" \
     ${spec[@]+"${spec[@]}"} \
     -c "$CTX" -ngl 99 -fa on -np 1 \

@@ -12,7 +12,14 @@
  *   MODEL      model name sent upstream     (default qwen-local)
  *   PORT       port to listen on            (default 8790)
  *   PROXY_THINK=0     disable the model's reasoning phase (default: ON)
- *   EMIT_THINKING=1   surface reasoning_content as visible text
+ *   THINK_VIEW        how the reasoning phase is shown (default: off; llm-serve
+ *                     starts the proxy with `native`):
+ *                       off     nothing — the stream just goes quiet
+ *                       status  compact heartbeat, then a "thought for Ns" line
+ *                       text    the whole chain of thought, inline
+ *                       native  Anthropic thinking blocks — Claude Code's own UI
+ *   THINK_TICK_MS     heartbeat interval for THINK_VIEW=status (default 10000)
+ *   EMIT_THINKING=1   alias for THINK_VIEW=text
  *   DEBUG=1           log every translated request to stderr
  *   DUMP_DIR=<dir>    write every translated request to a file (see below)
  *
@@ -31,9 +38,13 @@
  * but a silent socket looks dead — so this proxy emits SSE pings throughout.
  * Cap the reasoning phase server-side with `--reasoning-budget` (llm-serve does).
  *
- * Anthropic `thinking` blocks are never emitted: they carry a signature the
- * harness round-trips on the next turn, and a local model cannot produce a valid
- * one, so emitting them risks 400s on multi-turn conversations.
+ * Anthropic `thinking` blocks carry a signature that is normally Anthropic's
+ * proof the reasoning came back unmodified, which a local model cannot produce —
+ * so these were long left unemitted for fear of 400s. That fear turns out not to
+ * apply here: nothing validates the signature, because this proxy *is* the
+ * server. The harness simply round-trips the block to us on the next turn, and
+ * convertMessages drops it like any other non-text block. Measured end to end:
+ * Claude Code parses the blocks, keeps the signature, and renders them.
  */
 
 import http from "node:http";
@@ -44,7 +55,18 @@ const UPSTREAM = (process.env.UPSTREAM || "http://127.0.0.1:8089/v1").replace(/\
 const MODEL = process.env.MODEL || "qwen-local";
 const PORT = Number(process.env.PORT || 8790);
 const THINK = process.env.PROXY_THINK !== "0";
-const EMIT_THINKING = process.env.EMIT_THINKING === "1";
+// How the reasoning phase is surfaced. The model reasons on every turn either
+// way — this only decides whether you get to see it happening.
+//   off     nothing; the SSE pings are the only sign of life
+//   status  compact heartbeat: "thinking… 640 tokens · 25s", then a one-line total
+//   text    the whole chain of thought, inline as plain text
+//   native  real Anthropic thinking blocks, rendered by Claude Code's own UI
+// EMIT_THINKING=1 is kept as an alias for `text`.
+const THINK_VIEW = (
+  process.env.THINK_VIEW || (process.env.EMIT_THINKING === "1" ? "text" : "off")
+).toLowerCase();
+const THINK_TICK_MS = Number(process.env.THINK_TICK_MS || 10000);
+const EMIT_THINKING = THINK_VIEW === "text";
 const DEBUG = process.env.DEBUG === "1";
 
 // How often to emit an SSE ping while the upstream is silent. Prefill on a large
@@ -60,6 +82,21 @@ const PING_INTERVAL_MS = Number(process.env.PING_INTERVAL_MS || 5000);
 // them, in the same shape: the call is intercepted here, never forwarded to the
 // harness, and the model is re-prompted with the results.
 const WEB_TOOLS = process.env.WEB_TOOLS !== "0";
+
+// Claude Code does not use the API's server-side web_search tool. It ships its
+// own client-side `WebSearch`/`WebFetch` (capital W, with an input_schema), and
+// runs them itself. `WebFetch` works fine against a local model — it fetches
+// directly and summarises with whatever small model is configured. `WebSearch`
+// does not: its implementation reaches Anthropic for the actual search, so
+// pointed at a local endpoint it comes back "Did 0 searches". So we intercept
+// that one by name and run it here instead. Comma-separated list to override;
+// empty string disables. WebFetch is deliberately absent — it already works.
+const HARNESS_TOOLS = new Set(
+  (process.env.PROXY_HARNESS_TOOLS ?? "WebSearch")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean),
+);
 const SEARCH_BACKEND = (process.env.SEARCH_BACKEND || "duckduckgo").toLowerCase();
 const SEARCH_RESULTS = Number(process.env.SEARCH_RESULTS || 8);
 const BRAVE_API_KEY = process.env.BRAVE_API_KEY || "";
@@ -193,9 +230,25 @@ function runSearch(query, n) {
   return searchDuckDuckGo(query, n);
 }
 
+const hostOf = (url) => {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "").toLowerCase();
+  } catch {
+    return "";
+  }
+};
+
+/** Matches a domain filter the way the harness's WebSearch describes it. */
+const domainMatches = (host, filter) => {
+  const f = String(filter).replace(/^www\./, "").toLowerCase();
+  return host === f || host.endsWith(`.${f}`);
+};
+
+// Serves both the API's `web_search` shape and Claude Code's own `WebSearch`
+// (which adds allowed_domains / blocked_domains); the union is harmless.
 async function toolWebSearch(input) {
   const query = String(input?.query ?? "").trim();
-  if (!query) return "ERROR: web_search requires a non-empty `query`.";
+  if (!query) return "ERROR: web search requires a non-empty `query`.";
   const n = Math.min(Number(input?.max_results) || SEARCH_RESULTS, 20);
 
   let results;
@@ -204,6 +257,18 @@ async function toolWebSearch(input) {
   } catch (e) {
     return `ERROR: web search failed (${e.message}). Answer from what you already know, and say the search was unavailable.`;
   }
+
+  const allow = Array.isArray(input?.allowed_domains) ? input.allowed_domains : null;
+  const block = Array.isArray(input?.blocked_domains) ? input.blocked_domains : null;
+  if (allow?.length || block?.length) {
+    results = results.filter((r) => {
+      const host = hostOf(r.url);
+      if (allow?.length && !allow.some((d) => domainMatches(host, d))) return false;
+      if (block?.length && block.some((d) => domainMatches(host, d))) return false;
+      return true;
+    });
+  }
+
   if (!results.length) return `No results for "${query}".`;
 
   return results
@@ -255,6 +320,11 @@ const PROXY_TOOLS = {
       },
     },
   },
+  // Claude Code's own tool name. No `definition` — when we intercept a harness
+  // tool we forward its own schema untouched, so the model sees exactly the
+  // tool it was trained against and nothing about the prompt changes.
+  WebSearch: { run: toolWebSearch },
+
   web_fetch: {
     run: toolWebFetch,
     definition: {
@@ -387,6 +457,14 @@ function convertTools(tools, proxyTools) {
       continue;
     }
     if (!t.name) continue;
+
+    // A harness tool we stand in for is still advertised with its own schema —
+    // only the execution moves here, so the model cannot tell the difference.
+    if (WEB_TOOLS && HARNESS_TOOLS.has(t.name) && PROXY_TOOLS[t.name]) {
+      proxyTools.add(t.name);
+      debug(`intercepting harness tool ${t.name}`);
+    }
+
     out.push({
       type: "function",
       function: {
@@ -615,11 +693,36 @@ async function streamAnthropic(oaiReq, proxyTools, res, requestedModel) {
   let outputTokens = 0;
   let inputTokens = 0;
   let thinkingOpen = false;
+  let thinkStart = 0;
+  let thinkChunks = 0;
+  let thinkLastTick = 0;
 
   // Idempotent: a block is stopped at most once, whatever path closes it.
   let blockOpen = false;
   const closeOpenBlock = () => {
     if (blockOpen) {
+      // A native thinking block is signed before it closes. The signature is
+      // normally Anthropic's proof the reasoning is unmodified; nothing
+      // validates it here, and the harness only round-trips it back to us,
+      // where convertMessages drops thinking blocks anyway.
+      if (thinkingOpen && THINK_VIEW === "native") {
+        emit("content_block_delta", {
+          type: "content_block_delta",
+          index: blockIndex,
+          delta: { type: "signature_delta", signature: `local-${randomUUID()}` },
+        });
+      }
+      if (thinkingOpen && THINK_VIEW === "status") {
+        const secs = Math.round((Date.now() - thinkStart) / 1000);
+        emit("content_block_delta", {
+          type: "content_block_delta",
+          index: blockIndex,
+          delta: {
+            type: "text_delta",
+            text: `\n_(thought for ${secs}s, ~${thinkChunks} chunks)_\n\n`,
+          },
+        });
+      }
       emit("content_block_stop", { type: "content_block_stop", index: blockIndex });
       blockOpen = false;
     }
@@ -707,24 +810,61 @@ async function streamAnthropic(oaiReq, proxyTools, res, requestedModel) {
         if (!choice) continue;
         const delta = choice.delta || {};
 
-        // Reasoning arrives in its own field (--reasoning-format deepseek). Shown
-        // only on request; otherwise the pings above cover the silence.
-        if (EMIT_THINKING && delta.reasoning_content) {
+        // Reasoning arrives in its own field (--reasoning-format deepseek).
+        if (THINK_VIEW !== "off" && delta.reasoning_content) {
           if (!thinkingOpen) {
-            openBlock({ type: "text", text: "" });
-            textOpen = true;
+            if (THINK_VIEW === "native") {
+              openBlock({ type: "thinking", thinking: "" });
+            } else {
+              openBlock({ type: "text", text: "" });
+              textOpen = true;
+            }
             thinkingOpen = true;
+            thinkStart = Date.now();
+            thinkLastTick = thinkStart;
+            thinkChunks = 0;
+            if (THINK_VIEW === "text") {
+              emit("content_block_delta", {
+                type: "content_block_delta",
+                index: blockIndex,
+                delta: { type: "text_delta", text: "[thinking] " },
+              });
+            }
+            if (THINK_VIEW === "status") {
+              emit("content_block_delta", {
+                type: "content_block_delta",
+                index: blockIndex,
+                delta: { type: "text_delta", text: "_thinking…_" },
+              });
+            }
+          }
+          thinkChunks++;
+
+          if (THINK_VIEW === "native") {
             emit("content_block_delta", {
               type: "content_block_delta",
               index: blockIndex,
-              delta: { type: "text_delta", text: "[thinking] " },
+              delta: { type: "thinking_delta", thinking: delta.reasoning_content },
+            });
+          } else if (THINK_VIEW === "text") {
+            emit("content_block_delta", {
+              type: "content_block_delta",
+              index: blockIndex,
+              delta: { type: "text_delta", text: delta.reasoning_content },
+            });
+          } else if (Date.now() - thinkLastTick >= THINK_TICK_MS) {
+            // status: a periodic tick, not the reasoning itself. Deltas append,
+            // so this has to stay short or it becomes the very noise it replaces.
+            thinkLastTick = Date.now();
+            emit("content_block_delta", {
+              type: "content_block_delta",
+              index: blockIndex,
+              delta: {
+                type: "text_delta",
+                text: ` ${Math.round((thinkLastTick - thinkStart) / 1000)}s…`,
+              },
             });
           }
-          emit("content_block_delta", {
-            type: "content_block_delta",
-            index: blockIndex,
-            delta: { type: "text_delta", text: delta.reasoning_content },
-          });
         }
 
         if (delta.content) {
