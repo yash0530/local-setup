@@ -60,6 +60,32 @@ is_running() { # pidfile
   [[ -f "$1" ]] && kill -0 "$(cat "$1")" 2>/dev/null
 }
 
+# The pidfiles are a record, not the truth. An interrupted `start` — Ctrl-C
+# while the model loads, say — can leave a live daemon with no pidfile, after
+# which llm-serve reports "stopped", then tries to start a second one and hangs
+# on a port that is very much in use. Trust the listening socket over the file.
+adopt_orphan() { # port pidfile
+  local pid
+  pid="$(lsof -nP -iTCP:"$1" -sTCP:LISTEN -t 2>/dev/null | head -1)"
+  [[ -n "$pid" ]] || return 1
+  echo "  adopting orphaned process on :$1 (pid $pid)" >&2
+  echo "$pid" >"$2"
+}
+
+# Recover `current` from the running server's argv, since the model name is
+# right there in -m and losing it only makes `status` and `which` lie.
+reconcile() {
+  is_running "$SERVER_PID" || adopt_orphan "$LLAMA_PORT" "$SERVER_PID" || true
+  is_running "$PROXY_PID" || adopt_orphan "$PROXY_PORT" "$PROXY_PID" || true
+
+  if [[ ! -s "$CURRENT" ]] && is_running "$SERVER_PID"; then
+    local found
+    found="$(ps -o command= -p "$(cat "$SERVER_PID")" 2>/dev/null |
+      grep -oE 'qwen3\.6-[0-9]+b' | head -1 | sed 's/qwen3\.6-//')"
+    [[ -n "$found" ]] && echo "$found" >"$CURRENT"
+  fi
+}
+
 # Run a daemon in its own session, detached from the caller's process group.
 #
 # `nohup ... &` alone is not enough: nohup only ignores SIGHUP, while the child
@@ -168,6 +194,7 @@ start_proxy() {
 }
 
 cmd_start() {
+  reconcile
   local model="${1:-35b}"
   local path
   if ! path="$(model_path "$model")"; then
@@ -244,6 +271,7 @@ cmd_start() {
 }
 
 cmd_stop() {
+  reconcile
   echo "stopping local LLM stack"
   stop_pidfile "$PROXY_PID" "proxy"
   stop_pidfile "$SERVER_PID" "llama-server"
@@ -252,6 +280,7 @@ cmd_stop() {
 }
 
 cmd_status() {
+  reconcile
   local model; model="$(cat "$CURRENT" 2>/dev/null || echo '-')"
   if is_running "$SERVER_PID"; then
     local rss
