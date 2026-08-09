@@ -35,6 +35,13 @@ fi
 # real traffic to Anthropic, so it is explicitly cleared for this process.
 unset ANTHROPIC_API_KEY
 
+# API_TIMEOUT_MS bounds the whole request; the two idle-timeout vars below bound
+# the gap between streamed chunks, which is a different watchdog. A cold 141K
+# prefill measured 660s at 214 tok/s here, blowing past the 180s byte watchdog
+# long before the request timeout mattered -> "Stream idle timeout - no chunks
+# received". 1800000 is the byte watchdog's hard ceiling. Note that
+# CLAUDE_STREAM_IDLE_TIMEOUT_MS is a floor, max(env, 300000): it can only be
+# raised above 5 min, never lowered.
 exec env \
   ANTHROPIC_BASE_URL="http://127.0.0.1:${PROXY_PORT}" \
   ANTHROPIC_AUTH_TOKEN="local" \
@@ -44,5 +51,7 @@ exec env \
   CLAUDE_CODE_MAX_CONTEXT_TOKENS="${LLM_CTX:-262144}" \
   CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
   API_TIMEOUT_MS="${API_TIMEOUT_MS:-1800000}" \
+  CLAUDE_STREAM_IDLE_TIMEOUT_MS="${CLAUDE_STREAM_IDLE_TIMEOUT_MS:-1800000}" \
+  CLAUDE_BYTE_STREAM_IDLE_TIMEOUT_MS="${CLAUDE_BYTE_STREAM_IDLE_TIMEOUT_MS:-1800000}" \
   MAX_THINKING_TOKENS=0 \
   claude "$@"

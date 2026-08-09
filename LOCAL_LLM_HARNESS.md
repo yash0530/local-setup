@@ -327,6 +327,45 @@ silent, for the entire life of the request. The harness sees a live connection
 through both prefill and reasoning. `qwen-code` also sets
 `API_TIMEOUT_MS=1800000` as a backstop.
 
+#### Heartbeats are not sufficient on their own
+
+Pings keep the *socket* alive but do not count as *chunks*, and Claude Code runs
+two independent watchdogs:
+
+| Watchdog | Env var | Default | Counts |
+| --- | --- | --- | --- |
+| byte | `CLAUDE_BYTE_STREAM_IDLE_TIMEOUT_MS` | 180 s (first-party) | raw bytes — pings satisfy this |
+| chunk | `CLAUDE_STREAM_IDLE_TIMEOUT_MS` | 300 s | content blocks — pings do **not** |
+
+`API_TIMEOUT_MS` bounds the whole request and never binds first. So a prefill
+longer than 5 minutes still dies with `Stream idle timeout - no chunks
+received`, heartbeat notwithstanding — the CLI throws exactly that when the
+chunk watchdog trips with zero content blocks yielded.
+
+Observed on the 35B A3B: a resumed 141k-token session measured
+
+```
+prompt eval time = 659681.54 ms / 141540 tokens (4.66 ms/tok, 214.56 tok/s)
+```
+
+660 s of prefill against a 300 s chunk watchdog. Note the 214 tok/s versus the
+~910 tok/s headline figure above: prefill throughput degrades sharply with
+context depth, so deep-context resumes are several times slower per token than
+the shallow benchmark suggests.
+
+`qwen-code` therefore also sets both idle vars to 1800000. Two caveats:
+`CLAUDE_STREAM_IDLE_TIMEOUT_MS` is a floor — `max(env, 300000)` — so it can only
+be raised above 5 min, never lowered; and 1800000 is the byte watchdog's hard
+ceiling, so that is the most that can be bought.
+
+This only stops the crash. You still wait out the prefill, which is why
+`--cache-reuse 256` matters more in practice: it salvages matching chunks via KV
+shifting instead of all-or-nothing prefix matching, so a changed system prompt
+at position 0 no longer invalidates everything behind it. `--slot-save-path`
+merely *enables* the `/slots/{id}?action=save|restore` endpoints — llama.cpp
+does not persist or reload slots on its own, so nothing uses them until
+something calls them.
+
 A second, subtler failure this also explains: with a small `max_tokens`, thinking
 can consume the **entire budget and return zero content** — a request capped at
 64 tokens produced 64 thinking tokens and an empty answer.

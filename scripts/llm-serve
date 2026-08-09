@@ -16,7 +16,13 @@ set -euo pipefail
 
 STATE_DIR="${HOME}/.local/state/local-llm"
 LOG_DIR="${STATE_DIR}/logs"
-mkdir -p "$LOG_DIR"
+# KV slot cache. Cold prefill runs ~214 tok/s on the 35B A3B, so a 141K resume
+# costs ~11 min on a cache miss. --slot-save-path only enables the
+# /slots/{id}?action=save|restore endpoints; llama.cpp does not persist or
+# reload slots on its own, so nothing uses this until something calls them.
+# --cache-reuse is the one that helps automatically.
+KV_DIR="${STATE_DIR}/kv"
+mkdir -p "$LOG_DIR" "$KV_DIR"
 
 SERVER_PID="${STATE_DIR}/server.pid"
 PROXY_PID="${STATE_DIR}/proxy.pid"
@@ -256,6 +262,8 @@ cmd_start() {
     -c "$CTX" -ngl 99 -fa on -np 1 \
     ${mlock[@]+"${mlock[@]}"} \
     -ctk q8_0 -ctv q8_0 \
+    --cache-reuse 256 \
+    --slot-save-path "$KV_DIR" \
     --jinja --reasoning-format deepseek \
     --reasoning-budget "$THINK_BUDGET" \
     --temp 0.6 --top-p 0.95 --top-k 20 \
