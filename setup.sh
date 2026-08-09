@@ -55,7 +55,7 @@ if [ -d "$REPO_DIR/claude_plugins/commands" ] && [ "$(ls -A "$REPO_DIR/claude_pl
 fi
 # The local-llm plugin (local-qwen subagent + local-llm skill) is installed to a
 # staging directory, NOT to ~/.claude. Nothing there is active in a plain
-# `claude` session; `claude_local_subagent` loads it per-session via
+# `claude` session; `claude subagent` loads it per-session via
 # --plugin-dir. This is what keeps local models out of real Pro-plan work.
 if [ -d "$REPO_DIR/claude_plugins/plugins/local-llm" ]; then
   echo "Installing opt-in local-llm plugin (not active in plain \`claude\`)..."
@@ -91,7 +91,9 @@ echo "  installed: llm-serve, qwen, qwen-code, claude-local-subagent (+ llm-prox
 ZSHRC="$HOME/.zshrc"
 if [ -f "$ZSHRC" ]; then
   echo "Appending productivity aliases to $ZSHRC..."
-  if grep -q "claude_local_qwen" "$ZSHRC"; then
+  # Guard on the dispatcher, not on an alias: the aliases predate it and linger
+  # in older ~/.zshrc files, which would make this skip an append that is needed.
+  if grep -q "^claude() {" "$ZSHRC"; then
     echo "Aliases already present in $ZSHRC. Skipping append."
   else
     echo -e "\n# --- Added by local-setup installer ---" >> "$ZSHRC"

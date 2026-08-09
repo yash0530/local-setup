@@ -49,7 +49,8 @@ This repository includes a `setup.sh` script to configure everything for you. It
   `~/.claude/local-plugins/` — **not** active in a plain `claude` session.
 - Copy `statusline-command.sh` (the status line `settings.json` points at).
 - Copy and activate the **Claude Auto-Resume Daemon** (`launchd`).
-- Append aliases to your `~/.zshrc`.
+- Append the `claude` dispatcher function and the aliases to your `~/.zshrc`
+  (skipped if the dispatcher is already defined there).
 
 To run it:
 ```bash
@@ -71,10 +72,27 @@ source ~/.zshrc
 
 The installer appends the following aliases to your `~/.zshrc`. These bypass prompts, prevent Mac sleep during long runs, and handle background tasks:
 
-### 3.1 Dangerous Mode Bypass Aliases
-Skip permission prompts when running Claude Code or Antigravity, letting the model execute tools autonomously:
+### 3.1 The `claude` dispatcher
+
+`claude` is a shell **function**, not an alias — an alias cannot take a
+subcommand, and routing `claude local <model>` at the local stack needs one.
+Plain `claude` behaves exactly as the old `alias claude="claude
+--dangerously-skip-permissions"` did:
+
 ```bash
-alias claude="claude --dangerously-skip-permissions"
+claude                   # Pro subscription, --dangerously-skip-permissions
+claude local qwen36_27   # local 27B dense
+claude local qwen36_35   # local 35B A3B MoE
+claude local             # whichever model is already resident
+claude subagent          # Pro + the opt-in local delegation subagent
+```
+
+Every branch forwards `"$@"`, so flags survive: `claude -p "..."`,
+`claude local qwen36_35 --resume`. Inside the function, `command claude`
+bypasses it, so it cannot recurse.
+
+`agy` is still a plain alias:
+```bash
 alias agy="agy --dangerously-skip-permissions"
 ```
 
@@ -95,27 +113,37 @@ alias claude_resume_logs="claude-resume logs"
 ```bash
 llm_start / llm_stop / llm_status / llm_logs   # manage the local stack
 llm_use_27 / llm_use_35                        # switch resident model
-llm-serve restart-proxy                        # reload the proxy, model stays resident
 
-# Claude Code running entirely on local weights
-claude_local_qwen_3.6_27   # Claude Code on Qwen 3.6 27B (dense, higher quality)
-claude_local_qwen_3.6_35   # Claude Code on Qwen 3.6 35B A3B (MoE, ~4x faster)
-claude_local               # Claude Code on whichever model is resident
-
-# Claude Code on your Pro plan, PLUS the local-qwen delegation subagent
-claude_local_subagent
+# llm-serve subcommands with no alias
+llm-serve which           # which model is resident
+llm-serve restart         # full restart (reloads weights — slow)
+llm-serve restart-proxy   # reload just the proxy, model stays resident
 ```
+
+Claude Code on local weights goes through the §3.1 dispatcher:
+
+```bash
+claude local qwen36_27   # Qwen 3.6 27B (dense, higher quality)
+claude local qwen36_35   # Qwen 3.6 35B A3B (MoE, ~4x faster)
+claude local             # whichever model is resident
+claude subagent          # Pro plan + the local-qwen delegation subagent
+```
+
+The older `claude_local_qwen_3.6_27` / `_35` / `claude_local` /
+`claude_local_subagent` aliases are still defined and still work — they are what
+the dispatcher branches call — but the `claude local ...` form is the one to
+use.
 
 **Local models never leak into real work.** Two independent guarantees:
 
 | Command | Model driving | Local subagent available? |
 |---|---|---|
 | `claude` | Pro subscription | **No — not present in the session at all** |
-| `claude_local_subagent` | Pro subscription | Yes, and only when you name it in the prompt |
-| `claude_local_qwen_3.6_*` | Local Qwen | n/a — the whole session is local |
+| `claude subagent` | Pro subscription | Yes, and only when you name it in the prompt |
+| `claude local ...` | Local Qwen | n/a — the whole session is local |
 
 The `local-llm` plugin lives in `~/.claude/local-plugins/`, which Claude Code
-does **not** read; `claude_local_subagent` loads it for one session via
+does **not** read; `claude subagent` loads it for one session via
 `--plugin-dir`. And `ANTHROPIC_BASE_URL` is never exported globally — it is
 scoped inside the `qwen-code` process — so plain `claude` always stays on your
 Pro subscription.
@@ -158,7 +186,7 @@ Silicon. With one user at the keyboard, keep MTP and let requests queue.
 > ```bash
 > llm-serve start              # load 35B A3B + the Anthropic-translation proxy
 > qwen "explain this regex"    # one-shot, from your shell or a Bash call
-> claude_local_qwen_3.6_35     # Claude Code running 100% on local weights
+> claude local qwen36_35       # Claude Code running 100% on local weights
 > ```
 >
 > Plain `claude` is unaffected and still uses your Claude Pro subscription.
@@ -183,6 +211,14 @@ prompt plus tool definitions alone measure **~23,000 tokens**. See
 [LOCAL_LLM_HARNESS.md §4](LOCAL_LLM_HARNESS.md) for the caveat that deep context
 is cheap to *allocate* but slow to *use*.
 
+> **`--mlock` is not optional.** A 27–38 GB model on a 64 GB machine leaves
+> little headroom, and macOS compresses or evicts model pages as soon as
+> Spotlight and friends get busy. Generation barely notices; prefill sweeps every
+> weight per batch and falls off a cliff — measured on an *idle* server at
+> **196 → 4 tok/s**. Pinning the weights held 79 tok/s on the same run.
+> `llm-serve` passes it by default (`LLM_MLOCK=0` opts out); the raw commands
+> below need it spelled out.
+
 #### 🥇 Model 1: Qwen 3.6 27B (Dense) — 8-bit Quant (Q8_0) + MTP
 - **Best speculative draft depth**: `draft-n=2` (Acceptance rate: **68%**).
 - **Performance**: Peak **17.7 tok/s** decode (1.80x speedup vs MTP off).
@@ -190,7 +226,7 @@ is cheap to *allocate* but slow to *use*.
   ```bash
   llama-server -m ~/Models/qwen3.6-27b-mtp-q8/Qwen3.6-27B-Q8_0.gguf \
     --spec-type draft-mtp --spec-draft-n-max 2 \
-    -c 65536 -ngl 99 -fa on -np 1 -ctk q8_0 -ctv q8_0 --jinja --reasoning-format deepseek \
+    -c 65536 -ngl 99 -fa on -np 1 --mlock -ctk q8_0 -ctv q8_0 --jinja --reasoning-format deepseek \
     --temp 0.6 --top-p 0.95 --top-k 20 --host 127.0.0.1 --port 8089
   ```
 
@@ -201,9 +237,14 @@ is cheap to *allocate* but slow to *use*.
   ```bash
   llama-server -m ~/Models/qwen3.6-35b-a3b-mtp-q8/Qwen3.6-35B-A3B-Q8_0.gguf \
     --spec-type draft-mtp --spec-draft-n-max 1 \
-    -c 65536 -ngl 99 -fa on -np 1 -ctk q8_0 -ctv q8_0 --jinja --reasoning-format deepseek \
+    -c 65536 -ngl 99 -fa on -np 1 --mlock -ctk q8_0 -ctv q8_0 --jinja --reasoning-format deepseek \
     --temp 0.6 --top-p 0.95 --top-k 20 --host 127.0.0.1 --port 8089
   ```
+
+`llm-serve` additionally passes `--cache-reuse 256` (salvages matching KV chunks
+by shifting instead of all-or-nothing prefix matching) and `--slot-save-path`
+(enables the `/slots` save/restore endpoints — inert until something calls
+them). Neither is needed for one-shot raw use.
 
 ### 5.2 Model Downloads
 Download the 8-bit quantized models from Hugging Face:

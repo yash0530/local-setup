@@ -19,7 +19,7 @@ Kiro and agy have nothing installed at all.
 | 1 | `llm-serve` | CLI | Start/stop/switch the model + proxy. Everything else assumes this is running. |
 | 2 | `llm-proxy.mjs` | background service | Translates Anthropic ⇄ OpenAI so **Claude Code** can run on local weights. Started automatically by `llm-serve`. |
 | 3 | `qwen` | CLI | One-shot prompt. Run it yourself, or from a Claude Code Bash call. |
-| 4 | `qwen-code` | CLI wrapper | Launches Claude Code pinned to a local model. What the `claude_local_*` aliases call. |
+| 4 | `qwen-code` | CLI wrapper | Launches Claude Code pinned to a local model. What the `claude local ...` dispatcher branches call. |
 | 5 | `local-llm` plugin | Claude Code plugin | Bundles the `local-qwen` subagent + `local-llm` skill. **Never installed** — loaded per-session by #6. |
 | 6 | `claude-local-subagent` | CLI wrapper | Claude Code on your **Pro subscription**, with the local subagent available for that session only. |
 
@@ -27,7 +27,7 @@ And what each harness actually got:
 
 | Harness | What it got | How you use it |
 |---|---|---|
-| **Claude Code** | Everything — proxy, opt-in subagent, CLI | `claude_local_qwen_3.6_35`, or `claude_local_subagent`, or run `qwen` yourself |
+| **Claude Code** | Everything — proxy, opt-in subagent, CLI | `claude local qwen36_35`, or `claude subagent`, or run `qwen` yourself |
 | **Kiro** | **Nothing — removed** | n/a |
 | **agy** | **Nothing** | n/a |
 
@@ -58,15 +58,15 @@ Verified by asking each to enumerate its own subagents:
 | Command | `local-qwen` present? |
 |---|---|
 | `claude` | **No** — `agy:runner, claude, Explore, general-purpose, kiro:runner, Plan, statusline-setup` |
-| `claude_local_subagent` | **Yes** — same list plus `local-llm:local-qwen` |
+| `claude subagent` | **Yes** — same list plus `local-llm:local-qwen` |
 
-**Layer 2 — behavioural (inside a `claude_local_subagent` session).** Once the
+**Layer 2 — behavioural (inside a `claude subagent` session).** Once the
 plugin *is* loaded, the subagent's and skill's descriptions state that they fire
 **only when you name the local model in the request** ("ask qwen", "use the local
 model", "run this locally"), and that a task being bulky, repetitive, or cheaper
 to run locally is explicitly *not* a reason to route it there.
 
-The user-driven entry points (`qwen`, `qwen-code`, `claude_local_*`) are inert
+The user-driven entry points (`qwen`, `qwen-code`, `claude local ...`) are inert
 until you run them, and plain `claude` never routes anywhere but Anthropic.
 
 Because Kiro and agy have no local integration at all, they need no guard.
@@ -120,7 +120,7 @@ appears in its 17-tool list) and cannot take a custom endpoint.
                  │                      Claude Code Bash call
           ┌──────┴───────────┐                 │
           │ qwen-code        │        ┌────────┴──────────┐
-          │ claude_local_*   │        │ local-qwen        │
+          │ claude local ... │        │ local-qwen        │
           │ (Claude Code     │        │ subagent (opt-in) │
           │  on Qwen)        │        └───────────────────┘
           └──────────────────┘
@@ -137,8 +137,8 @@ llm-serve status           # what's resident, and is it healthy
 qwen "explain this regex: ^\d{3}-\d{4}$"        # one-shot, ~1 s
 git diff | qwen "write a conventional-commit message"
 
-claude_local_qwen_3.6_35   # interactive Claude Code, 100% local
-claude_local_qwen_3.6_27   # same, on the 27B dense model
+claude local qwen36_35     # interactive Claude Code, 100% local
+claude local qwen36_27     # same, on the 27B dense model
 
 llm-serve stop             # frees ~36 GB
 ```
@@ -161,6 +161,11 @@ measured-optimal draft depth:
 | TTFT | ~235 ms | ~750 ms |
 | judged quality | not separately graded | **8.7 / 10** |
 | resident RSS @ 65k ctx | 36.3 GB | 28.4 GB |
+
+> These are **shallow-context** figures. Prompt-processing throughput degrades
+> sharply with depth: the 35B's ~910 tok/s headline measured **214 tok/s** on a
+> 141k-token resume. Budget deep-context prefill off the degraded rate, not this
+> table — see §6 on the idle watchdogs.
 
 **Default to 35B A3B.** It is ~3.8x faster to decode and ~3.3x faster to prefill.
 For an agent loop — which is many round-trips of a large prompt — that gap is the
@@ -300,7 +305,7 @@ where these models' quality comes from — but it has a sharp operational edge.
 
 ### The failure
 
-Firing up `claude_local_qwen_3.6_27` produced:
+Firing up `claude local qwen36_27` produced:
 
 ```
 ✻ Waiting for API response · will retry in 4m 33s · check your network
@@ -532,6 +537,7 @@ when being wrong is cheap to detect.
 | `Unable to connect to API (ConnectionRefused)` mid-session | The proxy died. It used to inherit the process group of whatever shell started it, so a Ctrl-C, a closed terminal or a script killed on timeout took it down — `nohup` only covers SIGHUP. `llm-serve` now starts both daemons via `detach()`, which puts them in their own session; verify with `ps -o pid,pgid -p $(cat ~/.local/state/local-llm/proxy.pid)` — pid should equal pgid. `llm-serve restart-proxy` brings it back without touching the model. |
 | A turn takes *minutes*, and `llm-serve logs` shows prefill at single-digit tok/s | Memory pressure. A 27–38 GB model on a 64 GB machine leaves little headroom, and macOS compresses or evicts model pages whenever Spotlight, `contactsd` and friends get busy. Generation barely notices (it is bandwidth-light per token) but prefill sweeps every weight per batch, so it falls off a cliff — measured on an *idle* server: 196 → 4 tok/s. `llm-serve` now passes `--mlock` to pin the weights; the same run then held 79 tok/s. `LLM_MLOCK=0` opts out. |
 | The first turn of every session re-prefills ~20k tokens | Expected, and not fixable from here. The stable prefix (system prompt + tool schemas) is ~16.6k tokens, but the harness appends a static agent/skills catalog *after* your prompt — so a new prompt invalidates everything from that point on. Qwen 3.6 needs a context checkpoint at or below the divergence to restore, and checkpoints only ever exist above it, so llama.cpp re-processes the lot. Within a session it is fine: turn 2 onwards appends to a matching prefix and comes back in ~2 s. Keep sessions open rather than restarting them. |
+| `API Error: Stream idle timeout - no chunks received` when resuming a big session | The SSE heartbeat is working and is not the problem. Claude Code runs two watchdogs and a ping only satisfies one: the byte watchdog (`CLAUDE_BYTE_STREAM_IDLE_TIMEOUT_MS`, 180 s) counts raw bytes, the chunk watchdog (`CLAUDE_STREAM_IDLE_TIMEOUT_MS`, 300 s) counts content blocks. A ping is bytes, not a chunk, so any prefill over 5 min dies regardless. `API_TIMEOUT_MS` bounds the whole request and never binds first. `qwen-code` now sets both idle vars to 1800000 — note the chunk one is a floor, `max(env, 300000)`, so it can only be raised, and 1800000 is the byte watchdog's hard ceiling. Measured trigger: a 141k-token resume prefilled 660 s at 214 tok/s. See §6. |
 | Two sessions at once, or a stray `claude -p` left running | Fatal to latency. `-np 1` means one slot, so a forgotten headless client interleaves with your real request and both crawl. `ps -eo pid,etime,command \| grep "claude -p"` finds them. |
 
 ---
@@ -547,6 +553,7 @@ when being wrong is cheap to detect.
 | `~/.local/bin/claude-local-subagent` | Claude Code + the opt-in local subagent |
 | `~/.claude/local-plugins/local-llm/` | the opt-in plugin (subagent + skill). **Not** read by a plain `claude` |
 | `~/.local/state/local-llm/` | pidfiles, `current`, logs |
+| `~/.local/state/local-llm/kv/` | `--slot-save-path` target. Created on start; stays empty unless something calls the `/slots` save/restore endpoints |
 
 All of it is reproducible on a new machine with `./setup.sh` from this repo.
 
@@ -570,7 +577,11 @@ All of it is reproducible on a new machine with `./setup.sh` from this repo.
 - **One request at a time**, per `-np 1` above.
 - **Prompt caching doesn't apply.** There's no cross-request discount to exploit
   like the Anthropic API has; llama-server does keep a local prefix cache, which
-  is why repeated turns in one session prefill faster.
+  is why repeated turns in one session prefill faster. `--cache-reuse 256`
+  softens the all-or-nothing edge of that cache by shifting matching KV chunks
+  rather than discarding everything past the first divergent token, but it does
+  not survive a server restart — the cache is in RAM, and a `llm-serve restart`
+  or `start <other-model>` starts cold.
 - **`count_tokens` is approximated** (chars ÷ 3.5). It only drives compaction
   timing, so an approximation is fine.
 - **Web search is best-effort.** The proxy stands in for Anthropic's server-side
