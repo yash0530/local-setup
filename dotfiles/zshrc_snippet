@@ -62,9 +62,11 @@ alias claude_local_subagent="claude-local-subagent"
 # One-shot prompts against the resident model (thinking off by default)
 alias qwen_think="qwen --think"
 
-# Raw llama.cpp escape hatches (bench-derived MTP draft depths)
-alias serve_qwen_36_27b="llama-server -m ~/Models/qwen3.6-27b-mtp-q8/Qwen3.6-27B-Q8_0.gguf --spec-type draft-mtp --spec-draft-n-max 2 -c 65536 -ngl 99 -fa on -np 1 -ctk q8_0 -ctv q8_0 --jinja --reasoning-format deepseek --temp 0.6 --top-p 0.95 --top-k 20 --host 127.0.0.1 --port 8089"
-alias serve_qwen_36_35b="llama-server -m ~/Models/qwen3.6-35b-a3b-mtp-q8/Qwen3.6-35B-A3B-Q8_0.gguf --spec-type draft-mtp --spec-draft-n-max 1 -c 65536 -ngl 99 -fa on -np 1 -ctk q8_0 -ctv q8_0 --jinja --reasoning-format deepseek --temp 0.6 --top-p 0.95 --top-k 20 --host 127.0.0.1 --port 8089"
+# Raw llama.cpp escape hatches (bench-derived MTP draft depths).
+# --mlock is not optional: without it macOS evicts model pages under memory
+# pressure and prefill collapses (measured 196 -> 4 tok/s on an idle server).
+alias serve_qwen_36_27b="llama-server -m ~/Models/qwen3.6-27b-mtp-q8/Qwen3.6-27B-Q8_0.gguf --spec-type draft-mtp --spec-draft-n-max 2 -c 65536 -ngl 99 -fa on -np 1 --mlock -ctk q8_0 -ctv q8_0 --jinja --reasoning-format deepseek --temp 0.6 --top-p 0.95 --top-k 20 --host 127.0.0.1 --port 8089"
+alias serve_qwen_36_35b="llama-server -m ~/Models/qwen3.6-35b-a3b-mtp-q8/Qwen3.6-35B-A3B-Q8_0.gguf --spec-type draft-mtp --spec-draft-n-max 1 -c 65536 -ngl 99 -fa on -np 1 --mlock -ctk q8_0 -ctv q8_0 --jinja --reasoning-format deepseek --temp 0.6 --top-p 0.95 --top-k 20 --host 127.0.0.1 --port 8089"
 alias llama_qwen_36_27b="llama-cli -m ~/Models/qwen3.6-27b-mtp-q8/Qwen3.6-27B-Q8_0.gguf --spec-type draft-mtp --spec-draft-n-max 2 -n -1"
 alias llama_qwen_36_35b="llama-cli -m ~/Models/qwen3.6-35b-a3b-mtp-q8/Qwen3.6-35B-A3B-Q8_0.gguf --spec-type draft-mtp --spec-draft-n-max 1 -n -1"
 
