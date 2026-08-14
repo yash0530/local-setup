@@ -9,17 +9,17 @@ alias agy="agy --dangerously-skip-permissions"
 # take a subcommand, so routing `claude local <model>` to the local stack needs a
 # function. `command claude` bypasses this function, so it does not recurse.
 #   claude                   Pro subscription (default)
-#   claude local qwen36_27   local 27B    ·  claude local qwen36_35   local 35B
+#   claude local qwen38_27   local 27B    ·  claude local qwen36_35   local 35B
 #   claude local             whatever model is already resident
 #   claude subagent          Pro + the opt-in local delegation subagent
 # Every branch forwards "$@", so flags survive: `claude -p "..."`,
-# `claude local qwen36_27 --resume`, and so on.
+# `claude local qwen38_27 --resume`, and so on.
 claude() {
   case "${1:-}" in
     local)
       shift
       case "${1:-}" in
-        qwen36_27) shift; qwen-code --model 27b "$@" ;;
+        qwen38_27) shift; qwen-code --model 27b "$@" ;;
         qwen36_35) shift; qwen-code --model 35b "$@" ;;
         *)         qwen-code "$@" ;;
       esac
@@ -34,7 +34,7 @@ alias claude_resume="claude-resume"
 alias claude_resume_logs="claude-resume logs"
 
 # ------------------------------------------------------------------------------
-# Local LLM stack (Qwen 3.6 via llama-server)
+# Local LLM stack (Qwen 3.8 27B + Qwen 3.6 35B A3B via llama-server)
 # ------------------------------------------------------------------------------
 # NOTE: ANTHROPIC_BASE_URL is deliberately NOT exported here. Exporting it would
 # hijack the plain `claude` command and route your Claude Pro subscription to the
@@ -50,7 +50,7 @@ alias llm_use_27="llm-serve start 27b"
 alias llm_use_35="llm-serve start 35b"
 
 # Claude Code running entirely on a local model (pinned per alias)
-alias claude_local_qwen_3.6_27="qwen-code --model 27b"
+alias claude_local_qwen_3.8_27="qwen-code --model 27b"
 alias claude_local_qwen_3.6_35="qwen-code --model 35b"
 alias claude_local="qwen-code"             # whatever model is already resident
 
@@ -65,9 +65,12 @@ alias qwen_think="qwen --think"
 # Raw llama.cpp escape hatches (bench-derived MTP draft depths).
 # --mlock is not optional: without it macOS evicts model pages under memory
 # pressure and prefill collapses (measured 196 -> 4 tok/s on an idle server).
-alias serve_qwen_36_27b="llama-server -m ~/Models/qwen3.6-27b-mtp-q8/Qwen3.6-27B-Q8_0.gguf --spec-type draft-mtp --spec-draft-n-max 2 -c 65536 -ngl 99 -fa on -np 1 --mlock -ctk q8_0 -ctv q8_0 --jinja --reasoning-format deepseek --temp 0.6 --top-p 0.95 --top-k 20 --host 127.0.0.1 --port 8089"
-alias serve_qwen_36_35b="llama-server -m ~/Models/qwen3.6-35b-a3b-mtp-q8/Qwen3.6-35B-A3B-Q8_0.gguf --spec-type draft-mtp --spec-draft-n-max 1 -c 65536 -ngl 99 -fa on -np 1 --mlock -ctk q8_0 -ctv q8_0 --jinja --reasoning-format deepseek --temp 0.6 --top-p 0.95 --top-k 20 --host 127.0.0.1 --port 8089"
-alias llama_qwen_36_27b="llama-cli -m ~/Models/qwen3.6-27b-mtp-q8/Qwen3.6-27B-Q8_0.gguf --spec-type draft-mtp --spec-draft-n-max 2 -n -1"
+# Qwen 3.8 wants temp 1.0 in thinking mode where 3.6 wanted 0.6, so the sampling
+# differs per model here. KV stays fp16: quantizing it cost ~11% decode for no memory
+# saving worth having, measured on this machine.
+alias serve_qwen_38_27b="llama-server -m ~/Models/qwen3.8-27b-gguf/Qwen3.8-27B-Q8_0.gguf --spec-type draft-mtp --spec-draft-n-max 3 -c 65536 -ngl 99 -fa on -np 1 --mlock --jinja --reasoning-format deepseek --temp 1.0 --top-p 0.95 --top-k 20 --host 127.0.0.1 --port 8089"
+alias serve_qwen_36_35b="llama-server -m ~/Models/qwen3.6-35b-a3b-mtp-q8/Qwen3.6-35B-A3B-Q8_0.gguf --spec-type draft-mtp --spec-draft-n-max 1 -c 65536 -ngl 99 -fa on -np 1 --mlock --jinja --reasoning-format deepseek --temp 0.6 --top-p 0.95 --top-k 20 --host 127.0.0.1 --port 8089"
+alias llama_qwen_38_27b="llama-cli -m ~/Models/qwen3.8-27b-gguf/Qwen3.8-27B-Q8_0.gguf --spec-type draft-mtp --spec-draft-n-max 3 -n -1"
 alias llama_qwen_36_35b="llama-cli -m ~/Models/qwen3.6-35b-a3b-mtp-q8/Qwen3.6-35B-A3B-Q8_0.gguf --spec-type draft-mtp --spec-draft-n-max 1 -n -1"
 
 # Headless Server Sleep Management Aliases

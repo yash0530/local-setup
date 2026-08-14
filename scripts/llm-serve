@@ -52,18 +52,27 @@ MODEL_ALIASES="35b 27b"
 model_path() {
   case "$1" in
     35b) echo "${HOME}/Models/qwen3.6-35b-a3b-mtp-q8/Qwen3.6-35B-A3B-Q8_0.gguf" ;;
-    27b) echo "${HOME}/Models/qwen3.6-27b-mtp-q8/Qwen3.6-27B-Q8_0.gguf" ;;
+    27b) echo "${HOME}/Models/qwen3.8-27b-gguf/Qwen3.8-27B-Q8_0.gguf" ;;
     *) return 1 ;;
   esac
 }
 
-# Display name for a model alias. The family is no longer implied by the script: with
-# more than one Qwen generation installed, printing a hardcoded "qwen3.6-" prefix would
-# mislabel whichever model is not from that generation.
+# Display name for a model alias. The family is no longer implied by the script: the two
+# aliases are now different Qwen generations, so a hardcoded prefix would mislabel one.
 model_family() {
   case "$1" in
-    35b|27b) echo "qwen3.6" ;;
+    35b) echo "qwen3.6" ;;
+    27b) echo "qwen3.8" ;;
     *) echo "qwen" ;;
+  esac
+}
+
+# Qwen 3.8 asks for temp 1.0 in thinking mode; 3.6 asks for 0.6. Serving both at one
+# value would mean serving one of them against its own recommendation.
+model_temp() {
+  case "$1" in
+    27b) echo 1.0 ;;
+    *) echo 0.6 ;;
   esac
 }
 
@@ -292,7 +301,7 @@ cmd_start() {
     --slot-save-path "$KV_DIR" \
     --jinja --reasoning-format deepseek \
     --reasoning-budget "$THINK_BUDGET" \
-    --temp 0.6 --top-p 0.95 --top-k 20 \
+    --temp "$(model_temp "$model")" --top-p 0.95 --top-k 20 \
     -a qwen-local \
     --host 127.0.0.1 --port "${LLAMA_PORT}" --no-webui \
     >"$SERVER_LOG" 2>&1 &

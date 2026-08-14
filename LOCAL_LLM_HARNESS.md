@@ -138,7 +138,7 @@ qwen "explain this regex: ^\d{3}-\d{4}$"        # one-shot, ~1 s
 git diff | qwen "write a conventional-commit message"
 
 claude local qwen36_35     # interactive Claude Code, 100% local
-claude local qwen36_27     # same, on the 27B dense model
+claude local qwen38_27     # same, on the 27B dense model
 
 llm-serve stop             # frees ~36 GB
 ```
@@ -191,7 +191,6 @@ cache and MTP speculative decoding:
 llama-server -m ~/Models/qwen3.6-35b-a3b-mtp-q8/Qwen3.6-35B-A3B-Q8_0.gguf \
   --spec-type draft-mtp --spec-draft-n-max 1 \
   -c 262144 -ngl 99 -fa on -np 1 \
-  -ctk q8_0 -ctv q8_0 \
   --jinja --reasoning-format deepseek --reasoning-budget -1 \
   --temp 0.6 --top-p 0.95 --top-k 20 \
   -a qwen-local --host 127.0.0.1 --port 8089
@@ -305,7 +304,7 @@ where these models' quality comes from — but it has a sharp operational edge.
 
 ### The failure
 
-Firing up `claude local qwen36_27` produced:
+Firing up `claude local qwen38_27` produced:
 
 ```
 ✻ Waiting for API response · will retry in 4m 33s · check your network

@@ -81,7 +81,7 @@ Plain `claude` behaves exactly as the old `alias claude="claude
 
 ```bash
 claude                   # Pro subscription, --dangerously-skip-permissions
-claude local qwen36_27   # local 27B dense
+claude local qwen38_27   # local 27B dense
 claude local qwen36_35   # local 35B A3B MoE
 claude local             # whichever model is already resident
 claude subagent          # Pro + the opt-in local delegation subagent
@@ -123,13 +123,13 @@ llm-serve restart-proxy   # reload just the proxy, model stays resident
 Claude Code on local weights goes through the §3.1 dispatcher:
 
 ```bash
-claude local qwen36_27   # Qwen 3.6 27B (dense, higher quality)
+claude local qwen38_27   # Qwen 3.8 27B (dense, higher quality)
 claude local qwen36_35   # Qwen 3.6 35B A3B (MoE, ~4x faster)
 claude local             # whichever model is resident
 claude subagent          # Pro plan + the local-qwen delegation subagent
 ```
 
-The older `claude_local_qwen_3.6_27` / `_35` / `claude_local` /
+The older `claude_local_qwen_3.8_27` / `_3.6_35` / `claude_local` /
 `claude_local_subagent` aliases are still defined and still work — they are what
 the dispatcher branches call — but the `claude local ...` form is the one to
 use.
@@ -219,15 +219,19 @@ is cheap to *allocate* but slow to *use*.
 > `llm-serve` passes it by default (`LLM_MLOCK=0` opts out); the raw commands
 > below need it spelled out.
 
-#### 🥇 Model 1: Qwen 3.6 27B (Dense) — 8-bit Quant (Q8_0) + MTP
-- **Best speculative draft depth**: `draft-n=2` (Acceptance rate: **68%**).
-- **Performance**: Peak **17.7 tok/s** decode (1.80x speedup vs MTP off).
-- **Launch Command (`serve_qwen_36_27b`)**:
+#### 🥇 Model 1: Qwen 3.8 27B (Dense) — 8-bit Quant (Q8_0) + MTP
+Replaced Qwen 3.6 27B on 2026-08-14. The MTP head ships inline in the unsloth GGUFs,
+so no separate drafter file is needed. Qwen recommends temp 1.0 for this model in
+thinking mode, where 3.6 wanted 0.6. KV cache stays fp16 — quantizing it cost ~11%
+decode here for no memory saving worth having.
+- **Best speculative draft depth**: `draft-n=3` (provisional; from the 3.6 27B sweep,
+  pending the 3.8 quant sweep in `local_llm_bench`).
+- **Launch Command (`serve_qwen_38_27b`)**:
   ```bash
-  llama-server -m ~/Models/qwen3.6-27b-mtp-q8/Qwen3.6-27B-Q8_0.gguf \
-    --spec-type draft-mtp --spec-draft-n-max 2 \
-    -c 65536 -ngl 99 -fa on -np 1 --mlock -ctk q8_0 -ctv q8_0 --jinja --reasoning-format deepseek \
-    --temp 0.6 --top-p 0.95 --top-k 20 --host 127.0.0.1 --port 8089
+  llama-server -m ~/Models/qwen3.8-27b-gguf/Qwen3.8-27B-Q8_0.gguf \
+    --spec-type draft-mtp --spec-draft-n-max 3 \
+    -c 65536 -ngl 99 -fa on -np 1 --mlock --jinja --reasoning-format deepseek \
+    --temp 1.0 --top-p 0.95 --top-k 20 --host 127.0.0.1 --port 8089
   ```
 
 #### 🥈 Model 2: Qwen 3.6 35B A3B (MoE) — 8-bit Quant (Q8_0) + MTP
@@ -249,8 +253,8 @@ them). Neither is needed for one-shot raw use.
 ### 5.2 Model Downloads
 Download the 8-bit quantized models from Hugging Face:
 ```bash
-# Qwen 3.6 27B GGUF
-huggingface-cli download unsloth/Qwen3.6-27B-MTP-GGUF Qwen3.6-27B-Q8_0.gguf --local-dir ~/Models/qwen3.6-27b-mtp-q8
+# Qwen 3.8 27B GGUF (MTP head is inline; no separate MTP repo for this generation)
+huggingface-cli download unsloth/Qwen3.8-27B-GGUF Qwen3.8-27B-Q8_0.gguf --local-dir ~/Models/qwen3.8-27b-gguf
 
 # Qwen 3.6 35B A3B GGUF
 huggingface-cli download unsloth/Qwen3.6-35B-A3B-MTP-GGUF Qwen3.6-35B-A3B-Q8_0.gguf --local-dir ~/Models/qwen3.6-35b-a3b-mtp-q8
