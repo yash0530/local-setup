@@ -58,7 +58,7 @@ model_path() {
 draft_n() {
   case "$1" in
     35b) echo 1 ;;
-    27b) echo 2 ;;
+    27b) echo 3 ;;
   esac
 }
 
@@ -261,7 +261,6 @@ cmd_start() {
     ${spec[@]+"${spec[@]}"} \
     -c "$CTX" -ngl 99 -fa on -np 1 \
     ${mlock[@]+"${mlock[@]}"} \
-    -ctk q8_0 -ctv q8_0 \
     --cache-reuse 256 \
     --slot-save-path "$KV_DIR" \
     --jinja --reasoning-format deepseek \
