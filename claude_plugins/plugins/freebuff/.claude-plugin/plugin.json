@@ -1,0 +1,8 @@
+{
+  "name": "freebuff",
+  "version": "1.0.0",
+  "description": "Delegate tasks, boilerplate coding, test generation, and deep research to Freebuff (DeepSeek V4 Pro) from inside Claude Code — slash commands /freebuff:ask, /freebuff:delegate, /freebuff:research, /freebuff:help.",
+  "author": {
+    "name": "yash"
+  }
+}

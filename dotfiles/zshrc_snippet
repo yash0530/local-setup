@@ -75,6 +75,10 @@ alias llama_qwen_36_35b="llama-cli -m ~/Models/qwen3.6-35b-a3b-mtp-q8/Qwen3.6-35
 alias sleep_no="sudo pmset -a disablesleep 1"
 alias sleep_ok="sudo pmset -a disablesleep 0"
 
+# Freebuff Subagent & Headless Bridge
+alias freebuff_bridge="freebuff-bridge"
+alias freebuff_ask="freebuff-bridge -p"
+
 # Kiro CLI pre/post blocks are NOT part of this snippet. Kiro wants its post
 # block to be the last thing in ~/.zshrc, and this snippet gets appended to the
 # end — so installing it after Kiro leaves the post block stranded in the middle.

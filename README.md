@@ -255,3 +255,33 @@ huggingface-cli download unsloth/Qwen3.6-27B-MTP-GGUF Qwen3.6-27B-Q8_0.gguf --lo
 # Qwen 3.6 35B A3B GGUF
 huggingface-cli download unsloth/Qwen3.6-35B-A3B-MTP-GGUF Qwen3.6-35B-A3B-Q8_0.gguf --local-dir ~/Models/qwen3.6-35b-a3b-mtp-q8
 ```
+
+---
+
+## 6. Freebuff Subagent & Claude Code Integration
+
+[Freebuff](https://freebuff.com) provides an ad-supported, free multi-model coding ecosystem (powered by **DeepSeek V4 Pro**). It is integrated as a subagent worker for both **Claude Code** and **Antigravity (`agy`)**.
+
+### 6.1 Installation & One-Time Login
+```bash
+# 1. Install Freebuff CLI
+npm install -g freebuff
+
+# 2. Authenticate once in your browser
+freebuff login
+```
+
+### 6.2 Claude Code Freebuff Plugin
+The `freebuff` plugin provides slash commands and a delegated worker subagent:
+- `/freebuff:ask <prompt>`: Send a quick query or one-shot coding task.
+- `/freebuff:delegate <task>`: Offload boilerplate generation, test writing, or refactoring.
+- `/freebuff:research <topic>`: Run multi-agent web-augmented technical research.
+- `/freebuff:help`: Display command options.
+
+### 6.3 Standalone Headless Bridge CLI
+You can also run Freebuff tasks headlessly from any terminal or script:
+```bash
+# Ask a question or run a coding task in a specific directory
+freebuff-bridge -p "Write unit tests for utils.py" --cwd "/path/to/project"
+```
+
