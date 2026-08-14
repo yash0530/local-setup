@@ -45,6 +45,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROXY_JS="${SCRIPT_DIR}/llm-proxy.mjs"
 
 # --- model registry (Q8 GGUFs, MTP draft depth = benchmarked peak) ------------
+# Single list of valid aliases, used for validation, error messages, and recovering
+# which model a running server is serving.
+MODEL_ALIASES="35b 27b"
+
 model_path() {
   case "$1" in
     35b) echo "${HOME}/Models/qwen3.6-35b-a3b-mtp-q8/Qwen3.6-35B-A3B-Q8_0.gguf" ;;
@@ -53,12 +57,25 @@ model_path() {
   esac
 }
 
+# Display name for a model alias. The family is no longer implied by the script: with
+# more than one Qwen generation installed, printing a hardcoded "qwen3.6-" prefix would
+# mislabel whichever model is not from that generation.
+model_family() {
+  case "$1" in
+    35b|27b) echo "qwen3.6" ;;
+    *) echo "qwen" ;;
+  esac
+}
+
 # Peak-throughput draft depth per model, measured over the sweep:
-#   35B A3B: n=1 -> 67.2 tok/s (78% accept)   27B: n=2 -> 17.7 tok/s (68% accept)
+#   35B A3B: n=1 -> 67.2 tok/s (78% accept)   27B: n=3 -> 19.8 tok/s (68% accept)
+# The `*)` default matters: without it an unknown alias yields an empty string and the
+# launch line becomes `--spec-draft-n-max ` with no value.
 draft_n() {
   case "$1" in
     35b) echo 1 ;;
     27b) echo 3 ;;
+    *) echo 2 ;;
   esac
 }
 
@@ -85,9 +102,19 @@ reconcile() {
   is_running "$PROXY_PID" || adopt_orphan "$PROXY_PORT" "$PROXY_PID" || true
 
   if [[ ! -s "$CURRENT" ]] && is_running "$SERVER_PID"; then
-    local found
-    found="$(ps -o command= -p "$(cat "$SERVER_PID")" 2>/dev/null |
-      grep -oE 'qwen3\.6-[0-9]+b' | head -1 | sed 's/qwen3\.6-//')"
+    # Match the running argv against the registry rather than parsing a model name out
+    # of the path. Two generations can share a size — qwen3.6-27b and qwen3.8-27b both
+    # contain "27b" — so a pattern match would recover an alias that serves the wrong
+    # model, while comparing against model_path() cannot.
+    local argv found=""
+    argv="$(ps -o command= -p "$(cat "$SERVER_PID")" 2>/dev/null)"
+    if [[ -n "$argv" ]]; then
+      local alias_ path_
+      for alias_ in $MODEL_ALIASES; do
+        path_="$(model_path "$alias_")" || continue
+        if [[ "$argv" == *"$path_"* ]]; then found="$alias_"; break; fi
+      done
+    fi
     [[ -n "$found" ]] && echo "$found" >"$CURRENT"
   fi
 }
@@ -204,7 +231,7 @@ cmd_start() {
   local model="${1:-35b}"
   local path
   if ! path="$(model_path "$model")"; then
-    echo "unknown model '$model' (expected 35b or 27b)" >&2
+    echo "unknown model '$model' (expected one of: ${MODEL_ALIASES})" >&2
     exit 1
   fi
   if [[ ! -f "$path" ]]; then
@@ -253,7 +280,7 @@ cmd_start() {
     spec_label="MTP off"
   fi
 
-  echo "starting qwen3.6-${model} (Q8, ${spec_label}, ctx ${CTX}, think budget ${THINK_BUDGET})"
+  echo "starting $(model_family "$model")-${model} (Q8, ${spec_label}, ctx ${CTX}, think budget ${THINK_BUDGET})"
   # ${a[@]+"${a[@]}"}, not "${a[@]}": macOS ships bash 3.2, where expanding an
   # empty array under `set -u` is an unbound-variable error.
   detach llama-server \
@@ -292,7 +319,7 @@ cmd_status() {
   if is_running "$SERVER_PID"; then
     local rss
     rss="$(ps -o rss= -p "$(cat "$SERVER_PID")" | awk '{printf "%.1f GB", $1/1048576}')"
-    echo "llama-server  running   model=qwen3.6-${model}  port=${LLAMA_PORT}  rss=${rss}"
+    echo "llama-server  running   model=$(model_family "$model")-${model}  port=${LLAMA_PORT}  rss=${rss}"
   else
     echo "llama-server  stopped"
   fi
