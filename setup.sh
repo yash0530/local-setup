@@ -78,16 +78,14 @@ chmod +x "$HOME/.local/bin/claude-resume"
 # Run the daemon installation
 python3 "$CLAUDE_DIR/claude_resume_daemon.py" install
 
-# 5. Install the local-LLM stack (llama-server manager, proxy, CLIs) and Freebuff bridge
-echo "Installing tooling to $HOME/.local/bin..."
+# 5. Install the local-LLM stack (llama-server manager, proxy, CLIs)
+echo "Installing local LLM tooling to $HOME/.local/bin..."
 mkdir -p "$HOME/.local/bin"
 for tool in llm-serve llm-proxy.mjs qwen qwen-code claude-local-subagent; do
   cp "$REPO_DIR/scripts/$tool" "$HOME/.local/bin/$tool"
   chmod +x "$HOME/.local/bin/$tool"
 done
-cp "$REPO_DIR/scripts/freebuff_bridge.py" "$HOME/.local/bin/freebuff-bridge"
-chmod +x "$HOME/.local/bin/freebuff-bridge"
-echo "  installed: llm-serve, qwen, qwen-code, claude-local-subagent, freebuff-bridge"
+echo "  installed: llm-serve, qwen, qwen-code, claude-local-subagent (+ llm-proxy)"
 
 # 6. Append zshrc snippet to ~/.zshrc
 ZSHRC="$HOME/.zshrc"
