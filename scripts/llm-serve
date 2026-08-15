@@ -4,8 +4,8 @@
 # Serving flags come from the local_llm_bench sweep: the draft depth for each
 # model is the measured peak, not a guess.
 #
-#   llm-serve start [35b|27b|mlx8|mlx6|mlx4]  start (or switch to) a model + proxy
-#     35b/27b are GGUF via llama-server; mlx8/mlx6/mlx4 are MLX via mlx_vlm.server
+#   llm-serve start [35b|mlx8|mlx6|mlx4]  start (or switch to) a model + proxy
+#     35b is GGUF via llama-server; mlx8/mlx6/mlx4 are MLX via mlx_vlm.server
 #   llm-serve stop              stop everything
 #   llm-serve status            what's running, and whether it answers
 #   llm-serve restart [model]   stop then start
@@ -41,6 +41,11 @@ CTX="${LLM_CTX:-262144}"
 # Set LLM_THINK_BUDGET to a token count if you ever want to bound latency.
 THINK_BUDGET="${LLM_THINK_BUDGET:--1}"
 
+# Qwen 3.8 defaults to "xhigh" reasoning effort, which is why a trivial turn can spend a
+# minute thinking before the first visible token. LLM_EFFORT=low|medium|xhigh is passed
+# to the proxy and forwarded on each request; unset leaves the model's own default.
+LLM_EFFORT="${LLM_EFFORT:-}"
+
 # The proxy lives next to this script.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROXY_JS="${SCRIPT_DIR}/llm-proxy.mjs"
@@ -48,12 +53,11 @@ PROXY_JS="${SCRIPT_DIR}/llm-proxy.mjs"
 # --- model registry (Q8 GGUFs, MTP draft depth = benchmarked peak) ------------
 # Single list of valid aliases, used for validation, error messages, and recovering
 # which model a running server is serving.
-MODEL_ALIASES="35b 27b mlx8 mlx6 mlx4"
+MODEL_ALIASES="35b mlx8 mlx6 mlx4"
 
 model_path() {
   case "$1" in
     35b) echo "${HOME}/Models/qwen3.6-35b-a3b-mtp-q8/Qwen3.6-35B-A3B-Q8_0.gguf" ;;
-    27b) echo "${HOME}/Models/qwen3.8-27b-gguf/Qwen3.8-27B-Q8_0.gguf" ;;
     mlx8) echo "${HOME}/Models/qwen3.8-27b-mlx-8bit" ;;
     mlx6) echo "${HOME}/Models/qwen3.8-27b-mlx-6bit" ;;
     mlx4) echo "${HOME}/Models/qwen3.8-27b-mlx-4bit" ;;
@@ -91,7 +95,7 @@ MLX_PY="${LLM_MLX_PY:-${HOME}/Desktop/Programming/local_llm_bench/.mlxenv/bin/py
 model_family() {
   case "$1" in
     35b) echo "qwen3.6" ;;
-    27b|mlx8|mlx6|mlx4) echo "qwen3.8" ;;
+    mlx8|mlx6|mlx4) echo "qwen3.8" ;;
     *) echo "qwen" ;;
   esac
 }
@@ -100,7 +104,7 @@ model_family() {
 # value would mean serving one of them against its own recommendation.
 model_temp() {
   case "$1" in
-    27b|mlx8|mlx6|mlx4) echo 1.0 ;;
+    mlx8|mlx6|mlx4) echo 1.0 ;;
     *) echo 0.6 ;;
   esac
 }
@@ -112,7 +116,6 @@ model_temp() {
 draft_n() {
   case "$1" in
     35b) echo 1 ;;
-    27b) echo 3 ;;
     # MLX draft_block_size, not a llama.cpp draft-n: the drafter proposes block_size - 1
     # tokens, so 3 is the checkpoint's configured block and what the sweep measured.
     mlx8|mlx6|mlx4) echo 3 ;;
@@ -273,6 +276,7 @@ start_proxy() { # [model_name_for_upstream]
   UPSTREAM="http://127.0.0.1:${LLAMA_PORT}/v1" \
   PORT="${PROXY_PORT}" \
   THINK_VIEW="${THINK_VIEW:-native}" \
+  REASONING_EFFORT="${LLM_EFFORT:-}" \
     detach node "$PROXY_JS" >"$PROXY_LOG" 2>&1 &
   echo $! >"$PROXY_PID"
   sleep 1

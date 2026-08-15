@@ -10,7 +10,6 @@ alias agy="agy --dangerously-skip-permissions"
 # function. `command claude` bypasses this function, so it does not recurse.
 #   claude                   Pro subscription (default)
 #   claude local qwen38_27 [--bits 8|6|4]   Qwen 3.8 27B on MLX (default 8)
-#   claude local qwen38_27_gguf             same model, llama.cpp fallback
 #   claude local qwen36_35                  Qwen 3.6 35B A3B (fast MoE)
 #   claude local             whatever model is already resident
 #   claude subagent          Pro + the opt-in local delegation subagent
@@ -38,9 +37,6 @@ claude() {
           esac
           qwen-code --model "$_m" "$@"
           ;;
-        # Serve the 3.8 27B from GGUF instead. Kept as the fallback while the MLX
-        # serving path is new, and as the quality reference the quants are scored against.
-        qwen38_27_gguf) shift; qwen-code --model 27b "$@" ;;
         qwen36_35) shift; qwen-code --model 35b "$@" ;;
         # A bare `claude local` means "whatever model is already resident", and
         # `claude local -p "..."` must still pass flags through. But an unrecognised
@@ -50,7 +46,7 @@ claude() {
         -*|"")     qwen-code "$@" ;;
         *)
           echo "claude local: unknown model '$1'" >&2
-          echo "  expected: qwen38_27 [--bits 8|6|4] | qwen38_27_gguf | qwen36_35" >&2
+          echo "  expected: qwen38_27 [--bits 8|6|4] | qwen36_35" >&2
           echo "  (if this name looks right, run: source ~/.zshrc)" >&2
           return 1
           ;;
@@ -81,7 +77,6 @@ alias llm_logs="llm-serve logs"
 alias llm_use_27="llm-serve start mlx8"      # Qwen 3.8 27B, MLX 8-bit
 alias llm_use_27_6b="llm-serve start mlx6"   # ~24% faster/turn, 7 GB smaller
 alias llm_use_27_4b="llm-serve start mlx4"   # fastest; quality unmeasured
-alias llm_use_27_gguf="llm-serve start 27b"  # llama.cpp fallback
 alias llm_use_35="llm-serve start 35b"
 
 # Claude Code running entirely on a local model (pinned per alias)

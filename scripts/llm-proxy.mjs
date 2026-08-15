@@ -112,6 +112,8 @@ const UA =
 // session re-prefills 20k tokens the only way to find out *why* is to diff two
 // consecutive payloads and see what moved.
 const DUMP_DIR = process.env.DUMP_DIR || "";
+// "" leaves the model's own default. "low" | "medium" | "xhigh" for Qwen 3.8.
+const REASONING_EFFORT = process.env.REASONING_EFFORT || "";
 if (DUMP_DIR) fs.mkdirSync(DUMP_DIR, { recursive: true });
 
 const log = (...a) => console.error("[llm-proxy]", ...a);
@@ -510,6 +512,13 @@ function toOpenAIRequest(body) {
     stream: !!body.stream,
   };
   if (body.max_tokens) req.max_tokens = body.max_tokens;
+  // Qwen 3.8 exposes a reasoning_effort knob and defaults to "xhigh", which on an agent
+  // loop can mean a minute of thinking before the first visible token. mlx_vlm ignores
+  // chat_template_kwargs, so this has to go on the request as a top-level field —
+  // verified against mlx_vlm.server, where chat_template_kwargs changed nothing and the
+  // top-level field changed the output. Unset means "leave the model's default alone".
+  if (REASONING_EFFORT) req.reasoning_effort = REASONING_EFFORT;
+  if (typeof body.reasoning_effort === "string") req.reasoning_effort = body.reasoning_effort;
   if (typeof body.temperature === "number") req.temperature = body.temperature;
   if (typeof body.top_p === "number") req.top_p = body.top_p;
   if (Array.isArray(body.stop_sequences) && body.stop_sequences.length) req.stop = body.stop_sequences;
