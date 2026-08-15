@@ -219,14 +219,38 @@ is cheap to *allocate* but slow to *use*.
 > `llm-serve` passes it by default (`LLM_MLOCK=0` opts out); the raw commands
 > below need it spelled out.
 
-#### 🥇 Model 1: Qwen 3.8 27B (Dense) — 8-bit Quant (Q8_0) + MTP
-Replaced Qwen 3.6 27B on 2026-08-14. The MTP head ships inline in the unsloth GGUFs,
-so no separate drafter file is needed. Qwen recommends temp 1.0 for this model in
-thinking mode, where 3.6 wanted 0.6. KV cache stays fp16 — quantizing it cost ~11%
-decode here for no memory saving worth having.
-- **Best speculative draft depth**: `draft-n=3` (provisional; from the 3.6 27B sweep,
-  pending the 3.8 quant sweep in `local_llm_bench`).
-- **Launch Command (`serve_qwen_38_27b`)**:
+#### 🥇 Model 1: Qwen 3.8 27B (Dense) — MLX, 8/6/4-bit + MTP
+Replaced Qwen 3.6 27B on 2026-08-14, and moved from llama.cpp to **MLX** on 2026-08-15
+after the quant sweep in `local_llm_bench`. MLX won every matched-size comparison and
+matched llama.cpp's warm-cache TTFT, which is the metric that decided the 3.6 generation
+the other way.
+
+| Serving | Size | Decode @23k | Warm TTFT |
+|---|---:|---:|---:|
+| `mlx8` MLX 8-bit | 28 GB | 13.55 tok/s | 1.28 s |
+| `mlx6` MLX 6-bit | 21 GB | **16.55 tok/s** | 1.28 s |
+| `mlx4` MLX 4-bit | 15 GB | 19.78 tok/s | — |
+| `27b` llama.cpp Q8_0 | 27 GB | 12.51 tok/s | 1.50 s |
+
+`mlx8` is the default because it is closest to the reference and **quality below 8-bit is
+not yet measured**. `mlx6` is ~24% faster per warm turn and 7 GB smaller if you want it.
+
+```bash
+llm-serve start mlx8                  # or mlx6 / mlx4
+claude local qwen38_27 --bits 6       # Claude Code, pinned to the 6-bit build
+claude local qwen38_27_gguf           # llama.cpp fallback
+```
+
+Two things specific to the MLX path, both learned the hard way: `APC_ENABLED` defaults to
+`"0"` inside `mlx_vlm`, so prompt caching is silently off unless set (`llm-serve` sets
+it), and quantized KV plus MTP crashes this architecture at depth, so KV stays fp16.
+
+Speculation is a separate 8-bit drafter checkpoint rather than a head inside the weights.
+That is why MLX holds ~48% acceptance at every target size while llama.cpp's inline head
+degrades as you quantize — its MTP speedup falls from 1.36x at Q8 to **0.87x at Q4**, i.e.
+below Q8 you are faster with `LLM_SPEC=0`.
+
+- **Launch Command (`serve_qwen_38_27b`, llama.cpp fallback)**:
   ```bash
   llama-server -m ~/Models/qwen3.8-27b-gguf/Qwen3.8-27B-Q8_0.gguf \
     --spec-type draft-mtp --spec-draft-n-max 3 \
@@ -255,6 +279,10 @@ Download the 8-bit quantized models from Hugging Face:
 ```bash
 # Qwen 3.8 27B GGUF (MTP head is inline; no separate MTP repo for this generation)
 huggingface-cli download unsloth/Qwen3.8-27B-GGUF Qwen3.8-27B-Q8_0.gguf --local-dir ~/Models/qwen3.8-27b-gguf
+
+# Qwen 3.8 27B MLX (the default serving path) + its MTP drafter
+huggingface-cli download mlx-community/Qwen3.8-27B-8bit --local-dir ~/Models/qwen3.8-27b-mlx-8bit
+huggingface-cli download vvsotnikov/Qwen3.8-27B-MTP-MLX-8bit --local-dir ~/Models/qwen3.8-27b-mtp-mlx-8bit
 
 # Qwen 3.6 35B A3B GGUF
 huggingface-cli download unsloth/Qwen3.6-35B-A3B-MTP-GGUF Qwen3.6-35B-A3B-Q8_0.gguf --local-dir ~/Models/qwen3.6-35b-a3b-mtp-q8

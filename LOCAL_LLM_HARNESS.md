@@ -172,9 +172,20 @@ For an agent loop — which is many round-trips of a large prompt — that gap i
 difference between usable and unusable. Reach for the 27B only when a single
 answer's quality justifies waiting roughly 4x longer.
 
-Only one fits in 64 GB at Q8, so `llm-serve start <model>` **replaces** the
-resident one (verified: 35b→27b switches cleanly, and the proxy survives it
-because it is model-agnostic).
+Only one fits in 64 GB, so `llm-serve start <model>` **replaces** the resident
+one (verified: 35b→27b switches cleanly, and the proxy survives it because it is
+model-agnostic).
+
+**The 27B now serves from MLX, not llama.cpp** (changed 2026-08-15 after the Qwen
+3.8 quant sweep). Aliases `mlx8` / `mlx6` / `mlx4` launch `mlx_vlm.server`; `27b`
+remains the llama.cpp fallback. MLX beat llama.cpp at every matched size — 13.55 vs
+12.51 tok/s at 8-bit, 16.55 vs 10.40 at 6-bit — and matched its warm-cache TTFT
+(1.28 s vs 1.50 s), which is what makes the decode win actually count. On Qwen 3.6
+the same comparison went the other way because MLX re-prefilled the whole preamble
+every turn; on 3.8 its prompt cache engages.
+
+The speed gap above still holds against the 35B, so it remains the default for
+agent loops. The MLX 27B narrows the gap rather than closing it.
 
 ---
 

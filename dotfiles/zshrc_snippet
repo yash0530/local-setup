@@ -9,7 +9,9 @@ alias agy="agy --dangerously-skip-permissions"
 # take a subcommand, so routing `claude local <model>` to the local stack needs a
 # function. `command claude` bypasses this function, so it does not recurse.
 #   claude                   Pro subscription (default)
-#   claude local qwen38_27   local 27B    ·  claude local qwen36_35   local 35B
+#   claude local qwen38_27 [--bits 8|6|4]   Qwen 3.8 27B on MLX (default 8)
+#   claude local qwen38_27_gguf             same model, llama.cpp fallback
+#   claude local qwen36_35                  Qwen 3.6 35B A3B (fast MoE)
 #   claude local             whatever model is already resident
 #   claude subagent          Pro + the opt-in local delegation subagent
 # Every branch forwards "$@", so flags survive: `claude -p "..."`,
@@ -19,7 +21,26 @@ claude() {
     local)
       shift
       case "${1:-}" in
-        qwen38_27) shift; qwen-code --model 27b "$@" ;;
+        qwen38_27)
+          # Qwen 3.8 27B on MLX, which beat llama.cpp at every size in the sweep and
+          # matches its warm-cache TTFT. --bits picks the quant; 8 is the default
+          # because it is closest to the reference and quality below 8-bit is not yet
+          # measured. 6 is ~24% faster per warm turn and 7 GB smaller.
+          shift
+          local _bits=8
+          if [[ "${1:-}" == "--bits" ]]; then _bits="${2:-8}"; shift 2; fi
+          local _m
+          case "$_bits" in
+            8) _m=mlx8 ;;
+            6) _m=mlx6 ;;
+            4) _m=mlx4 ;;
+            *) echo "claude local qwen38_27: --bits must be 8, 6 or 4" >&2; return 1 ;;
+          esac
+          qwen-code --model "$_m" "$@"
+          ;;
+        # Serve the 3.8 27B from GGUF instead. Kept as the fallback while the MLX
+        # serving path is new, and as the quality reference the quants are scored against.
+        qwen38_27_gguf) shift; qwen-code --model 27b "$@" ;;
         qwen36_35) shift; qwen-code --model 35b "$@" ;;
         *)         qwen-code "$@" ;;
       esac
@@ -34,7 +55,7 @@ alias claude_resume="claude-resume"
 alias claude_resume_logs="claude-resume logs"
 
 # ------------------------------------------------------------------------------
-# Local LLM stack (Qwen 3.8 27B + Qwen 3.6 35B A3B via llama-server)
+# Local LLM stack (Qwen 3.8 27B via MLX; Qwen 3.6 35B A3B via llama-server)
 # ------------------------------------------------------------------------------
 # NOTE: ANTHROPIC_BASE_URL is deliberately NOT exported here. Exporting it would
 # hijack the plain `claude` command and route your Claude Pro subscription to the
@@ -46,11 +67,14 @@ alias llm_start="llm-serve start"          # defaults to 35B A3B
 alias llm_stop="llm-serve stop"
 alias llm_status="llm-serve status"
 alias llm_logs="llm-serve logs"
-alias llm_use_27="llm-serve start 27b"
+alias llm_use_27="llm-serve start mlx8"      # Qwen 3.8 27B, MLX 8-bit
+alias llm_use_27_6b="llm-serve start mlx6"   # ~24% faster/turn, 7 GB smaller
+alias llm_use_27_4b="llm-serve start mlx4"   # fastest; quality unmeasured
+alias llm_use_27_gguf="llm-serve start 27b"  # llama.cpp fallback
 alias llm_use_35="llm-serve start 35b"
 
 # Claude Code running entirely on a local model (pinned per alias)
-alias claude_local_qwen_3.8_27="qwen-code --model 27b"
+alias claude_local_qwen_3.8_27="qwen-code --model mlx8"
 alias claude_local_qwen_3.6_35="qwen-code --model 35b"
 alias claude_local="qwen-code"             # whatever model is already resident
 

@@ -37,8 +37,12 @@ locally", "use local-qwen", "test this on the 27B".
 
 **Default to 35B A3B** — ~4x faster to decode and ~3x to prefill, which is the
 difference between a usable agent loop and an unusable one. Only one fits in
-64 GB at Q8, so switching *replaces* the resident model: `llm-serve start 27b`.
+64 GB, so switching *replaces* the resident model: `llm-serve start mlx8`.
 Check with `llm-serve which`.
+
+Model aliases: `35b` (Qwen 3.6 35B A3B, llama.cpp) · `mlx8` / `mlx6` / `mlx4`
+(Qwen 3.8 27B on MLX, the default 27B path) · `27b` (same model, llama.cpp
+fallback). From a shell, `claude local qwen38_27 --bits 6` pins the 6-bit build.
 
 ## The three ways in
 
