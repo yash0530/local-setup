@@ -246,13 +246,19 @@ wait_healthy() {
   return 1
 }
 
-start_proxy() {
+start_proxy() { # [model_name_for_upstream]
   if is_running "$PROXY_PID"; then return 0; fi
+  # llama-server is told `-a qwen-local`, so it answers to that name whatever the file
+  # is called. mlx_vlm.server has no such alias: it treats the request's `model` field
+  # as something to load, so an unknown name sends it to Hugging Face looking for a repo
+  # called "qwen-local" and the request fails with a 401. MLX therefore has to be
+  # addressed by the path it was loaded from.
+  local upstream_model="${1:-qwen-local}"
   # The model reasons on every turn regardless; `native` means Claude Code
   # renders that phase in its own thinking UI instead of the stream just going
   # quiet for a minute. Verified: the harness parses the blocks and keeps the
   # signature. THINK_VIEW=off|status|text to change it — see the proxy header.
-  MODEL=qwen-local \
+  MODEL="$upstream_model" \
   UPSTREAM="http://127.0.0.1:${LLAMA_PORT}/v1" \
   PORT="${PROXY_PORT}" \
   THINK_VIEW="${THINK_VIEW:-native}" \
@@ -336,6 +342,28 @@ cmd_start() {
                 --draft-block-size "$(draft_n "$model")")
       mlx_label="MTP block=$(draft_n "$model")"
     fi
+    # --enable-thinking is not optional for this model. Without it the server leaves
+    # thinking off for requests that do not set `enable_thinking` themselves, the chat
+    # template emits a pre-closed <think></think>, and Qwen 3.8 answers with no reasoning
+    # at all — while llama-server --jinja reasons by default. The same class of silent
+    # divergence cost a 10h rerun in the benchmark harness. Note the request field is
+    # top-level `enable_thinking`; mlx_vlm ignores the `chat_template_kwargs` that
+    # llm-proxy.mjs sends, so the server default is what actually decides this.
+    #
+    # mlx_vlm.server rejects thinking_budget together with a drafter
+    # ("thinking_budget is not supported with speculative decoding in the server").
+    # -1 means unlimited, which is the server's own default, so in the normal case the
+    # flag is simply unnecessary. A real budget alongside speculation cannot be honoured,
+    # so say so rather than failing every request at generation time.
+    local mlx_think=()
+    if [[ "$THINK_BUDGET" != "-1" ]]; then
+      if [[ ${#mlx_spec[@]} -gt 0 ]]; then
+        echo "  note: LLM_THINK_BUDGET is ignored on MLX while MTP is on (engine limitation);" >&2
+        echo "        set LLM_SPEC=0 to use a thinking budget instead" >&2
+      else
+        mlx_think=(--thinking-budget "$THINK_BUDGET")
+      fi
+    fi
     echo "starting $(model_family "$model")-${model} (MLX, ${mlx_label}, think budget ${THINK_BUDGET})"
     # APC_ENABLED defaults to "0" inside mlx_vlm, so prompt caching is off unless this is
     # set — a detail that silently invalidated a whole warm-cache measurement on 3.6.
@@ -343,14 +371,15 @@ cmd_start() {
     APC_ENABLED=1 detach "$MLX_PY" -m mlx_vlm.server \
       --model "$path" \
       ${mlx_spec[@]+"${mlx_spec[@]}"} \
-      --thinking-budget "$THINK_BUDGET" \
+      ${mlx_think[@]+"${mlx_think[@]}"} \
+      --enable-thinking \
       --host 127.0.0.1 --port "${LLAMA_PORT}" \
       >"$SERVER_LOG" 2>&1 &
     echo $! >"$SERVER_PID"
     echo "$model" >"$CURRENT"
     wait_healthy || exit 1
     echo "  mlx_vlm.server up on http://127.0.0.1:${LLAMA_PORT}  (OpenAI API)"
-    start_proxy
+    start_proxy "$path"
     return
   fi
 
