@@ -320,7 +320,7 @@ cmd_start() {
     # ephemeral ports instead, leaving :${LLAMA_PORT} free. It gets restarted at
     # the end of this function.
     stop_pidfile "$PROXY_PID" "proxy"
-    stop_pidfile "$SERVER_PID" "llama-server"
+    stop_pidfile "$SERVER_PID" "model server"
   fi
 
   wait_port_free "$LLAMA_PORT" || exit 1
@@ -422,7 +422,7 @@ cmd_stop() {
   reconcile
   echo "stopping local LLM stack"
   stop_pidfile "$PROXY_PID" "proxy"
-  stop_pidfile "$SERVER_PID" "llama-server"
+  stop_pidfile "$SERVER_PID" "model server"
   rm -f "$CURRENT"
   echo "  done"
 }
@@ -433,7 +433,9 @@ cmd_status() {
   if is_running "$SERVER_PID"; then
     local rss
     rss="$(ps -o rss= -p "$(cat "$SERVER_PID")" | awk '{printf "%.1f GB", $1/1048576}')"
-    echo "llama-server  running   model=$(model_family "$model")-${model}  port=${LLAMA_PORT}  rss=${rss}"
+    local eng="llama-server"
+    [[ "$(model_engine "$model")" == "mlx" ]] && eng="mlx_vlm.serv"
+    echo "${eng}  running   model=$(model_family "$model")-${model}  port=${LLAMA_PORT}  rss=${rss}"
   else
     echo "llama-server  stopped"
   fi

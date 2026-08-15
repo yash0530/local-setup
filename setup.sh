@@ -72,8 +72,8 @@ cp "$REPO_DIR/scripts/claude_resume_daemon.README.md" "$CLAUDE_DIR/claude_resume
 # Install global cli wrapper
 echo "Installing claude-resume command..."
 mkdir -p "$HOME/.local/bin"
-cp "$REPO_DIR/scripts/claude-resume" "$HOME/.local/bin/claude-resume"
-chmod +x "$HOME/.local/bin/claude-resume"
+ln -sfn "$REPO_DIR/scripts/claude-resume" "$HOME/.local/bin/claude-resume"
+chmod +x "$REPO_DIR/scripts/claude-resume"
 
 # Run the daemon installation
 python3 "$CLAUDE_DIR/claude_resume_daemon.py" install
@@ -81,9 +81,13 @@ python3 "$CLAUDE_DIR/claude_resume_daemon.py" install
 # 5. Install the local-LLM stack (llama-server manager, proxy, CLIs)
 echo "Installing local LLM tooling to $HOME/.local/bin..."
 mkdir -p "$HOME/.local/bin"
+# Symlink rather than copy. Copies go stale the moment this repo is updated, and the
+# failure is confusing rather than loud: PATH keeps running an old script while the repo
+# shows the new one, so a model alias added here produced "unknown model" from a
+# months-old copy. Symlinks cannot drift.
 for tool in llm-serve llm-proxy.mjs qwen qwen-code claude-local-subagent; do
-  cp "$REPO_DIR/scripts/$tool" "$HOME/.local/bin/$tool"
-  chmod +x "$HOME/.local/bin/$tool"
+  ln -sfn "$REPO_DIR/scripts/$tool" "$HOME/.local/bin/$tool"
+  chmod +x "$REPO_DIR/scripts/$tool"
 done
 echo "  installed: llm-serve, qwen, qwen-code, claude-local-subagent (+ llm-proxy)"
 
