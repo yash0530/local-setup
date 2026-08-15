@@ -4,7 +4,8 @@
 # Serving flags come from the local_llm_bench sweep: the draft depth for each
 # model is the measured peak, not a guess.
 #
-#   llm-serve start [35b|27b]   start (or switch to) a model, plus the proxy
+#   llm-serve start [35b|27b|mlx6|mlx4]   start (or switch to) a model + proxy
+#     35b/27b are GGUF via llama-server; mlx6/mlx4 are MLX via mlx_vlm.server
 #   llm-serve stop              stop everything
 #   llm-serve status            what's running, and whether it answers
 #   llm-serve restart [model]   stop then start
@@ -47,22 +48,49 @@ PROXY_JS="${SCRIPT_DIR}/llm-proxy.mjs"
 # --- model registry (Q8 GGUFs, MTP draft depth = benchmarked peak) ------------
 # Single list of valid aliases, used for validation, error messages, and recovering
 # which model a running server is serving.
-MODEL_ALIASES="35b 27b"
+MODEL_ALIASES="35b 27b mlx6 mlx4"
 
 model_path() {
   case "$1" in
     35b) echo "${HOME}/Models/qwen3.6-35b-a3b-mtp-q8/Qwen3.6-35B-A3B-Q8_0.gguf" ;;
     27b) echo "${HOME}/Models/qwen3.8-27b-gguf/Qwen3.8-27B-Q8_0.gguf" ;;
+    mlx6) echo "${HOME}/Models/qwen3.8-27b-mlx-6bit" ;;
+    mlx4) echo "${HOME}/Models/qwen3.8-27b-mlx-4bit" ;;
     *) return 1 ;;
   esac
 }
+
+# Which engine serves an alias. MLX beat llama.cpp at every matched size in the 3.8
+# sweep — by 10% at 8-bit and 54-59% at 6- and 4-bit — so these are served by
+# mlx_vlm.server rather than llama-server. The two paths share nothing but the port and
+# the `qwen-local` model name the proxy expects.
+model_engine() {
+  case "$1" in
+    mlx6|mlx4) echo "mlx" ;;
+    *) echo "llamacpp" ;;
+  esac
+}
+
+# MLX speculation is a separate drafter checkpoint rather than a head inside the weights.
+# It is held at 8-bit no matter how the target is quantized, which is precisely why MLX
+# keeps ~49% acceptance at every size while llama.cpp's inline head decays with the model.
+model_draft() {
+  case "$1" in
+    mlx6|mlx4) echo "${HOME}/Models/qwen3.8-27b-mtp-mlx-8bit" ;;
+    *) echo "" ;;
+  esac
+}
+
+# Python that has mlx_vlm installed. Defaults to the benchmark repo's venv; override with
+# LLM_MLX_PY if that repo moves.
+MLX_PY="${LLM_MLX_PY:-${HOME}/Desktop/Programming/local_llm_bench/.mlxenv/bin/python}"
 
 # Display name for a model alias. The family is no longer implied by the script: the two
 # aliases are now different Qwen generations, so a hardcoded prefix would mislabel one.
 model_family() {
   case "$1" in
     35b) echo "qwen3.6" ;;
-    27b) echo "qwen3.8" ;;
+    27b|mlx6|mlx4) echo "qwen3.8" ;;
     *) echo "qwen" ;;
   esac
 }
@@ -84,6 +112,9 @@ draft_n() {
   case "$1" in
     35b) echo 1 ;;
     27b) echo 3 ;;
+    # MLX draft_block_size, not a llama.cpp draft-n: the drafter proposes block_size - 1
+    # tokens, so 3 is the checkpoint's configured block and what the sweep measured.
+    mlx6|mlx4) echo 3 ;;
     *) echo 2 ;;
   esac
 }
@@ -243,9 +274,15 @@ cmd_start() {
     echo "unknown model '$model' (expected one of: ${MODEL_ALIASES})" >&2
     exit 1
   fi
-  if [[ ! -f "$path" ]]; then
-    echo "model file not found: $path" >&2
+  # GGUF models are a single file; MLX models are a directory of shards.
+  if [[ ! -f "$path" && ! -d "$path" ]]; then
+    echo "model not found: $path" >&2
     echo "download it first — see local-setup/README.md section 5.2" >&2
+    exit 1
+  fi
+  if [[ "$(model_engine "$model")" == "mlx" && ! -x "$MLX_PY" ]]; then
+    echo "no mlx_vlm interpreter at $MLX_PY" >&2
+    echo "set LLM_MLX_PY to a python that has mlx_vlm installed" >&2
     exit 1
   fi
 
@@ -287,6 +324,33 @@ cmd_start() {
   if [[ "${LLM_SPEC:-1}" == "0" ]]; then
     spec=()
     spec_label="MTP off"
+  fi
+
+  if [[ "$(model_engine "$model")" == "mlx" ]]; then
+    local mlx_spec=()
+    local draft; draft="$(model_draft "$model")"
+    local mlx_label="MTP off"
+    if [[ -d "$draft" && "${LLM_SPEC:-1}" != "0" ]]; then
+      mlx_spec=(--draft-model "$draft" --draft-kind mtp
+                --draft-block-size "$(draft_n "$model")")
+      mlx_label="MTP block=$(draft_n "$model")"
+    fi
+    echo "starting $(model_family "$model")-${model} (MLX, ${mlx_label}, think budget ${THINK_BUDGET})"
+    # APC_ENABLED defaults to "0" inside mlx_vlm, so prompt caching is off unless this is
+    # set — a detail that silently invalidated a whole warm-cache measurement on 3.6.
+    # KV stays unquantized: quantized KV plus MTP crashes this architecture at depth.
+    APC_ENABLED=1 detach "$MLX_PY" -m mlx_vlm.server \
+      --model "$path" \
+      ${mlx_spec[@]+"${mlx_spec[@]}"} \
+      --thinking-budget "$THINK_BUDGET" \
+      --host 127.0.0.1 --port "${LLAMA_PORT}" \
+      >"$SERVER_LOG" 2>&1 &
+    echo $! >"$SERVER_PID"
+    echo "$model" >"$CURRENT"
+    wait_healthy || exit 1
+    echo "  mlx_vlm.server up on http://127.0.0.1:${LLAMA_PORT}  (OpenAI API)"
+    start_proxy
+    return
   fi
 
   echo "starting $(model_family "$model")-${model} (Q8, ${spec_label}, ctx ${CTX}, think budget ${THINK_BUDGET})"
