@@ -91,14 +91,27 @@ echo "  installed: llm-serve, qwen, qwen-code, claude-local-subagent (+ llm-prox
 ZSHRC="$HOME/.zshrc"
 if [ -f "$ZSHRC" ]; then
   echo "Appending productivity aliases to $ZSHRC..."
-  # Guard on the dispatcher, not on an alias: the aliases predate it and linger
-  # in older ~/.zshrc files, which would make this skip an append that is needed.
-  if grep -q "^claude() {" "$ZSHRC"; then
-    echo "Aliases already present in $ZSHRC. Skipping append."
+  # Replace an existing block rather than skipping it. The previous version guarded on
+  # `^claude() {` and skipped when found, so there was an install path but no *update*
+  # path: editing the snippet in this repo changed nothing in an already-installed
+  # shell, and the stale copy kept running. That is how a shell kept dispatching to a
+  # model alias this repo had already renamed.
+  START="# --- Added by local-setup installer ---"
+  END="# --------------------------------------"
+  if grep -qF "$START" "$ZSHRC"; then
+    echo "Updating existing local-setup block in $ZSHRC..."
+    cp "$ZSHRC" "${ZSHRC}.bak-$(date +%Y%m%d-%H%M%S)"
+    # Rewrite between the markers, leaving everything else — notably anything that
+    # insists on being last, like the Kiro post block — exactly where it was.
+    awk -v start="$START" -v end="$END" -v snip="$REPO_DIR/dotfiles/zshrc_snippet" '
+      $0 == start { print; while ((getline line < snip) > 0) print line; skip = 1; next }
+      $0 == end && skip { skip = 0 }
+      !skip { print }
+    ' "$ZSHRC" > "${ZSHRC}.tmp" && mv "${ZSHRC}.tmp" "$ZSHRC"
   else
-    echo -e "\n# --- Added by local-setup installer ---" >> "$ZSHRC"
+    echo -e "\n$START" >> "$ZSHRC"
     cat "$REPO_DIR/dotfiles/zshrc_snippet" >> "$ZSHRC"
-    echo "# --------------------------------------" >> "$ZSHRC"
+    echo "$END" >> "$ZSHRC"
   fi
 else
   echo "Warning: ~/.zshrc not found. Snippet is located at $REPO_DIR/dotfiles/zshrc_snippet"
