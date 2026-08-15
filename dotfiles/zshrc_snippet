@@ -42,7 +42,18 @@ claude() {
         # serving path is new, and as the quality reference the quants are scored against.
         qwen38_27_gguf) shift; qwen-code --model 27b "$@" ;;
         qwen36_35) shift; qwen-code --model 35b "$@" ;;
-        *)         qwen-code "$@" ;;
+        # A bare `claude local` means "whatever model is already resident", and
+        # `claude local -p "..."` must still pass flags through. But an unrecognised
+        # *word* here used to be forwarded to claude as the initial prompt, so a stale
+        # shell or a typo turned `claude local qwen38_27` into a session whose first
+        # message was the literal text "qwen38_27". Fail loudly instead.
+        -*|"")     qwen-code "$@" ;;
+        *)
+          echo "claude local: unknown model '$1'" >&2
+          echo "  expected: qwen38_27 [--bits 8|6|4] | qwen38_27_gguf | qwen36_35" >&2
+          echo "  (if this name looks right, run: source ~/.zshrc)" >&2
+          return 1
+          ;;
       esac
       ;;
     subagent) shift; claude-local-subagent "$@" ;;
