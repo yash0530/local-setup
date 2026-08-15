@@ -253,7 +253,18 @@ start_proxy() { # [model_name_for_upstream]
   # as something to load, so an unknown name sends it to Hugging Face looking for a repo
   # called "qwen-local" and the request fails with a 401. MLX therefore has to be
   # addressed by the path it was loaded from.
-  local upstream_model="${1:-qwen-local}"
+  # Derive it rather than requiring the caller to pass it: `restart-proxy` has no model
+  # argument, and defaulting to "qwen-local" there sent MLX requests to Hugging Face
+  # looking for a repo by that name. The resident model is recorded in $CURRENT.
+  local upstream_model="${1:-}"
+  if [[ -z "$upstream_model" ]]; then
+    local cur; cur="$(cat "$CURRENT" 2>/dev/null || true)"
+    if [[ -n "$cur" && "$(model_engine "$cur")" == "mlx" ]]; then
+      upstream_model="$(model_path "$cur")"
+    else
+      upstream_model="qwen-local"
+    fi
+  fi
   # The model reasons on every turn regardless; `native` means Claude Code
   # renders that phase in its own thinking UI instead of the stream just going
   # quiet for a minute. Verified: the harness parses the blocks and keeps the

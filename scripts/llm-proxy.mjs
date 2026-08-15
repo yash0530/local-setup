@@ -377,9 +377,24 @@ function blocksToText(content) {
  */
 function convertMessages(anthropicMessages, systemText) {
   const out = [];
-  if (systemText) out.push({ role: "system", content: systemText });
+
+  // Qwen 3.8's chat template raises "System message must be at the beginning" if any
+  // system-role message appears after index 0. Anthropic carries the system prompt in a
+  // top-level field, but a system-role turn can still reach us inside `messages`, and
+  // emitting it inline puts one mid-conversation. Collect every piece of system content
+  // up front and send exactly one, first — which is also what the OpenAI shape expects.
+  const systemParts = [];
+  if (systemText) systemParts.push(systemText);
+  for (const msg of anthropicMessages || []) {
+    if (msg.role !== "system") continue;
+    const t = typeof msg.content === "string" ? msg.content
+      : Array.isArray(msg.content) ? blocksToText(msg.content) : "";
+    if (t) systemParts.push(t);
+  }
+  if (systemParts.length) out.push({ role: "system", content: systemParts.join("\n\n") });
 
   for (const msg of anthropicMessages || []) {
+    if (msg.role === "system") continue;   // already hoisted above
     const content = msg.content;
 
     if (typeof content === "string") {
