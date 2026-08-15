@@ -401,9 +401,21 @@ cmd_start() {
     # held one request, and 6 held three. Claude Code spends that in a single turn — every
     # tool call and every background recap is another request — so the conversation was
     # evicted before the follow-up arrived and each turn paid a full ~60s cold prefill.
-    # Measured with three interleaved requests: 46.2s at 6 entries, 1.3s at 40, with RSS
-    # unchanged (23.0 -> 21.9 GB), because the snapshots share storage rather than copying.
-    APC_ENABLED=1 APC_EXACT_CACHE_ENTRIES="${LLM_APC_ENTRIES:-40}" detach "$MLX_PY" -m mlx_vlm.server \
+    # Measured with three interleaved requests: 46.2s at 6 entries, 1.3s at 40.
+    #
+    # But the count is bounded by RAM, not by how much history would be nice to have.
+    # Each snapshot is a real KV allocation: for this model a 24k-token prompt is about
+    # 1.5 GB (16 full-attention layers x 4 KV heads x 256 dim x 2 for K+V x 2 bytes x 24k
+    # tokens; the 48 GatedDeltaNet layers carry fixed-size recurrent state and add little).
+    # With a 28 GB model on a 64 GB machine, 10 entries is ~15 GB worst case with real
+    # headroom left.
+    #
+    # 40 was tried and panicked the kernel — "pending memory object unexpectedly found in
+    # non pending hash" @IOGPUGroupMemory.cpp:528, a GPU memory-manager panic under the
+    # allocation churn. The measurement that made 40 look free was invalid: every test
+    # request shared a single prefix, so the snapshots shared storage and RSS never moved.
+    # Any change to this number must be measured with DISTINCT conversations.
+    APC_ENABLED=1 APC_EXACT_CACHE_ENTRIES="${LLM_APC_ENTRIES:-10}" detach "$MLX_PY" -m mlx_vlm.server \
       --model "$path" \
       ${mlx_spec[@]+"${mlx_spec[@]}"} \
       ${mlx_think[@]+"${mlx_think[@]}"} \
