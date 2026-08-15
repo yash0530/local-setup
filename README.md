@@ -241,9 +241,24 @@ claude local qwen38_27 --bits 6       # Claude Code, pinned to the 6-bit build
 claude local qwen38_27_gguf           # llama.cpp fallback
 ```
 
-Two things specific to the MLX path, both learned the hard way: `APC_ENABLED` defaults to
-`"0"` inside `mlx_vlm`, so prompt caching is silently off unless set (`llm-serve` sets
-it), and quantized KV plus MTP crashes this architecture at depth, so KV stays fp16.
+##### MLX serving gotchas
+
+`mlx_vlm.server` differs from `llama-server` in five ways that each break serving. All are
+handled by `llm-serve`; they are recorded here because every one of them fails quietly or
+misleadingly, and anyone reproducing this by hand will hit them.
+
+| Gotcha | Symptom |
+|---|---|
+| No `-a` model alias — the request's `model` field names something to *load* | `401` from Hugging Face looking for a repo called `qwen-local`; the proxy must send the model path |
+| `--enable-thinking` is off by default | **Silent.** Template emits a pre-closed `<think></think>`, Qwen 3.8 answers with no reasoning, requests look fine |
+| `chat_template_kwargs` is ignored | `PROXY_THINK` cannot control thinking; only the server flag decides |
+| `--thinking-budget` + speculative decoding | `thinking_budget is not supported with speculative decoding in the server` |
+| `APC_ENABLED` defaults to `"0"` | **Silent.** Prompt caching off, so every turn re-prefills the whole preamble |
+
+Quantized KV plus MTP also crashes this architecture at depth, so KV stays fp16.
+
+Only the second and fifth produce plausible-looking output while being wrong, which makes
+them the expensive ones: the model answers, just not the way it is supposed to.
 
 Speculation is a separate 8-bit drafter checkpoint rather than a head inside the weights.
 That is why MLX holds ~48% acceptance at every target size while llama.cpp's inline head
