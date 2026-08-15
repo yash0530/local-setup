@@ -377,6 +377,28 @@ function blocksToText(content) {
  *   - tool results are user-role content blocks in Anthropic, but their own
  *     `role: "tool"` messages in OpenAI.
  */
+/**
+ * Remove content that changes every turn from the system prompt.
+ *
+ * The system prompt is the one span that has to be byte-identical across turns, because
+ * mlx_vlm's prompt cache runs in "exact" mode for hybrid models: a stored entry is reused
+ * only if it is a strict prefix of the new prompt (apc.py:3020), with no partial credit.
+ * One changed byte at 94% depth throws away the whole 24k-token prefix and costs a full
+ * ~60s re-prefill on every turn.
+ *
+ * Claude Code appends a `<total_tokens>` budget note to the system prompt and accumulates
+ * one more of them per turn — measured 2 blocks on turn 1, 3 on turn 2 — which moved the
+ * first divergence to char 15036 of 15924 and defeated the cache completely. The note is
+ * advisory about remaining budget and carries nothing a local model can act on.
+ */
+function stripVolatile(text) {
+  if (!text) return text;
+  return text
+    .replace(/\n*<total_tokens>[\s\S]*?<\/total_tokens>/g, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trimEnd();
+}
+
 function convertMessages(anthropicMessages, systemText) {
   const out = [];
 
@@ -393,7 +415,9 @@ function convertMessages(anthropicMessages, systemText) {
       : Array.isArray(msg.content) ? blocksToText(msg.content) : "";
     if (t) systemParts.push(t);
   }
-  if (systemParts.length) out.push({ role: "system", content: systemParts.join("\n\n") });
+  if (systemParts.length) {
+    out.push({ role: "system", content: stripVolatile(systemParts.join("\n\n")) });
+  }
 
   for (const msg of anthropicMessages || []) {
     if (msg.role === "system") continue;   // already hoisted above
