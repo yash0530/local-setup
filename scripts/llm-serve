@@ -44,7 +44,11 @@ THINK_BUDGET="${LLM_THINK_BUDGET:--1}"
 # Qwen 3.8 defaults to "xhigh" reasoning effort, which is why a trivial turn can spend a
 # minute thinking before the first visible token. LLM_EFFORT=low|medium|xhigh is passed
 # to the proxy and forwarded on each request; unset leaves the model's own default.
-LLM_EFFORT="${LLM_EFFORT:-}"
+# Default to "medium". Qwen 3.8's own default is "xhigh", which on an agent loop means
+# ~900-2000 reasoning tokens even for "what is up" — at ~14 tok/s that is most of a
+# minute before the first visible token. Set LLM_EFFORT=xhigh to restore the model's
+# default, or low to trim further.
+LLM_EFFORT="${LLM_EFFORT:-medium}"
 
 # The proxy lives next to this script.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -383,15 +387,23 @@ cmd_start() {
     # APC_ENABLED defaults to "0" inside mlx_vlm, so prompt caching is off unless this is
     # set — a detail that silently invalidated a whole warm-cache measurement on 3.6.
     # KV stays unquantized: quantized KV plus MTP crashes this architecture at depth.
-    # APC_EXACT_CACHE_ENTRIES defaults to 2, which is not enough for Claude Code. This
-    # is a hybrid model, so APC runs in "exact" mode: whole-conversation snapshots rather
-    # than a shared block pool. Claude Code interleaves background calls — recaps, titles,
-    # the small/fast model, all pointed at this same server by qwen-code — and each one
-    # displaces a snapshot. With the default the main conversation was evicted between
-    # turns and every follow-up paid a full cold prefill: measured 25s versus 1s once an
-    # unrelated request came in between. Six entries keeps the working set alive; the
-    # snapshots cost RAM, so raise LLM_APC_ENTRIES further only if you have headroom.
-    APC_ENABLED=1 APC_EXACT_CACHE_ENTRIES="${LLM_APC_ENTRIES:-6}" detach "$MLX_PY" -m mlx_vlm.server \
+    # This is a hybrid model, so APC runs in "exact" mode: whole-conversation snapshots,
+    # and crucially there is NO partial-prefix reuse — a stored entry must be a strict
+    # prefix of the new prompt or it contributes nothing (apc.py:3020).
+    #
+    # Each prefill stores TWO entries: the full prompt, plus a checkpoint 16 tokens
+    # earlier (APC_EXACT_PREFIX_GUARD_TOKENS). The checkpoint is what actually carries a
+    # conversation forward, because turn N's prompt ends with the assistant generation
+    # header and turn N+1 re-renders that turn differently — the full entry always fails,
+    # the checkpoint survives.
+    #
+    # So the entry count buys HALF as much history as it looks like: the old default of 2
+    # held one request, and 6 held three. Claude Code spends that in a single turn — every
+    # tool call and every background recap is another request — so the conversation was
+    # evicted before the follow-up arrived and each turn paid a full ~60s cold prefill.
+    # Measured with three interleaved requests: 46.2s at 6 entries, 1.3s at 40, with RSS
+    # unchanged (23.0 -> 21.9 GB), because the snapshots share storage rather than copying.
+    APC_ENABLED=1 APC_EXACT_CACHE_ENTRIES="${LLM_APC_ENTRIES:-40}" detach "$MLX_PY" -m mlx_vlm.server \
       --model "$path" \
       ${mlx_spec[@]+"${mlx_spec[@]}"} \
       ${mlx_think[@]+"${mlx_think[@]}"} \
