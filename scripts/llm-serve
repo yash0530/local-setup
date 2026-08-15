@@ -383,7 +383,15 @@ cmd_start() {
     # APC_ENABLED defaults to "0" inside mlx_vlm, so prompt caching is off unless this is
     # set — a detail that silently invalidated a whole warm-cache measurement on 3.6.
     # KV stays unquantized: quantized KV plus MTP crashes this architecture at depth.
-    APC_ENABLED=1 detach "$MLX_PY" -m mlx_vlm.server \
+    # APC_EXACT_CACHE_ENTRIES defaults to 2, which is not enough for Claude Code. This
+    # is a hybrid model, so APC runs in "exact" mode: whole-conversation snapshots rather
+    # than a shared block pool. Claude Code interleaves background calls — recaps, titles,
+    # the small/fast model, all pointed at this same server by qwen-code — and each one
+    # displaces a snapshot. With the default the main conversation was evicted between
+    # turns and every follow-up paid a full cold prefill: measured 25s versus 1s once an
+    # unrelated request came in between. Six entries keeps the working set alive; the
+    # snapshots cost RAM, so raise LLM_APC_ENTRIES further only if you have headroom.
+    APC_ENABLED=1 APC_EXACT_CACHE_ENTRIES="${LLM_APC_ENTRIES:-6}" detach "$MLX_PY" -m mlx_vlm.server \
       --model "$path" \
       ${mlx_spec[@]+"${mlx_spec[@]}"} \
       ${mlx_think[@]+"${mlx_think[@]}"} \
