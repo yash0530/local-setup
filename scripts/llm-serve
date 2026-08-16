@@ -438,7 +438,7 @@ cmd_start() {
     fi
     local apc_label="APC off"
     if [[ "${LLM_APC:-1}" != "0" ]]; then
-      apc_label="APC ${LLM_APC_ENTRIES:-8} entries"
+      apc_label="APC ${LLM_APC_ENTRIES:-6} entries"
       [[ -n "$APC_DISK" ]] && apc_label="${apc_label} + disk ${APC_DISK_GB}GB"
     fi
     echo "starting $(model_family "$model")-${model} (MLX, ${mlx_label}, ${apc_label}, think budget ${THINK_BUDGET})"
@@ -484,9 +484,11 @@ cmd_start() {
     # every test request shared a single prefix, so the snapshots shared storage and RSS
     # never moved. Any change to this number must be measured with DISTINCT conversations.
     #
-    # So the count is a probability dial on a driver race, not a correctness setting.
-    # 8 keeps us strictly below the 10 that panicked; the disk tier (see the top of this
-    # file) is how you exceed RAM capacity without turning that dial up.
+    # The count turned out NOT to be the dial — see the drafter note above; it panicked at
+    # 40, 10 and 8 alike, and the only stable configuration had MTP off. 6 is kept anyway
+    # because the disk tier makes the RAM count nearly free to lower: an evicted entry now
+    # costs a disk restore rather than a ~70s cold prefill, so there is no reason to sit on
+    # an untested number. The disk tier, not this count, is how you hold more history.
     #
     # LLM_APC=0 disables it, LLM_APC_ENTRIES sets the count. Note that 0 and -1 both mean
     # DISABLED, not unlimited: apc.py:2868 is max(0, int(env)) and <= 0 is checked in four
@@ -496,7 +498,7 @@ cmd_start() {
     # shell function — `env` cannot invoke one, and an assignment prefix has to be literal
     # at parse time, so a conditional set of disk vars cannot be spelled that way.
     export APC_ENABLED="${LLM_APC:-1}"
-    export APC_EXACT_CACHE_ENTRIES="${LLM_APC_ENTRIES:-8}"
+    export APC_EXACT_CACHE_ENTRIES="${LLM_APC_ENTRIES:-6}"
     if [[ -n "$APC_DISK" ]]; then
       mkdir -p "$APC_DISK"
       export APC_DISK_PATH="$APC_DISK"
