@@ -384,19 +384,21 @@ cmd_start() {
     local mlx_label="MTP off"
     # MTP defaults OFF on MLX, and the reason is now measured rather than assumed.
     #
-    # DO NOT set LLM_SPEC=1 while APC is enabled. Three kernel panics, all with the
-    # drafter and the prompt cache active together:
+    # DO NOT set LLM_SPEC=1 while APC is enabled. Four kernel panics, every one of them
+    # with the drafter and the prompt cache active together:
     #
     #   40 entries  "pending memory object unexpectedly found in non pending hash"
     #                @IOGPUGroupMemory.cpp:528
     #   10 entries  same assertion, with 13 GB free
     #    8 entries  "completeMemory() prepare count underflow" @IOGPUMemory.cpp:550,
     #                with 17 GB free and server RSS flat at 15.6 GB — the model size
+    #    4 entries  same :550 assertion, WITH the disk tier and WITH the store-side
+    #                mx.eval chunked (scripts/apply-mlx-patches). Died in 11 minutes.
     #
-    # The earlier reading of this was that the entry count was the dial and the drafter
-    # was incidental. That is wrong. Dropping 40 -> 10 -> 8 did not prevent it, memory was
-    # never close to exhausted, and the run that was stable for hours (29 requests) had
-    # MTP OFF at 4 entries. The common factor in every panic is the DRAFTER, not the count.
+    # Three things have now been falsified as the dial: the entry count (40/10/8/4 all
+    # panic), memory pressure (never close to exhausted), and the unchunked store-side
+    # eval (chunking it did not help, so that patch was reverted). The one factor present
+    # in all four and absent from every stable run is the DRAFTER.
     #
     # Mechanically that fits: MTP is not just extra memory (it shares the target's KV via
     # set_shared_kv, so it adds almost no snapshot cost). It MUTATES the cache —
@@ -405,10 +407,22 @@ cmd_start() {
     # those same objects. Two subsystems retaining and releasing the same GPU buffers is
     # exactly how you get a refcount underflow, which is what :550 asserts on.
     #
-    # The third panic hit mid-prefill of a 43k-token request, i.e. while APC was doing its
-    # unchunked store. To use the drafter, disable the cache: LLM_APC=0 LLM_SPEC=1.
-    # The trade is lopsided anyway — measured on 3 turns before the panic, the drafter
-    # bought ~22 tok/s vs ~14 baseline, but a cache hit saves ~70s of prefill per turn.
+    # To use the drafter you must disable the cache entirely: LLM_APC=0 LLM_SPEC=1.
+    #
+    # That is a worse trade than it looks, and the measurement is worth keeping because it
+    # is the opposite of what the cold-cache benchmarks in local_llm_bench imply. Measured
+    # here at ~30-40k context on mlx4:
+    #
+    #            warm decode   cold decode   prefill(warm)   prefill(cold)
+    #   MTP on    19.9 tok/s    21.4 tok/s        ~2s            ~85s
+    #   MTP off    9.2 tok/s    15.2 tok/s        ~2s            ~85s
+    #
+    # MTP is worth ~2.16x in the WARM state that real work runs in — far more than the
+    # 1.26x the bench suite reports, because that suite only ever measures cold caches
+    # (bench_mlx.py:21 asserts cached_tokens == 0). But you cannot have it with the cache,
+    # and the cache is worth more: a typical ~200-token request costs ~24s with APC and no
+    # drafter, versus ~94s with the drafter and no cache. Caching wins below ~1300
+    # generated tokens per request, which is nearly every Claude Code request.
     if [[ -d "$draft" && "${LLM_SPEC:-0}" == "1" ]]; then
       mlx_spec=(--draft-model "$draft" --draft-kind mtp
                 --draft-block-size "$(draft_n "$model")")
