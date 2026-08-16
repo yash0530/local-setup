@@ -1,0 +1,121 @@
+#!/usr/bin/env python3
+"""apply-mlx-patches — patch the installed mlx_vlm for Apple Silicon GPU stability.
+
+mlx_vlm lives in a venv outside this repo, so a normal patch file would be lost on any
+reinstall and would break on line-offset drift. This applies the edits by string match
+instead, is idempotent, and reports what it did.
+
+    scripts/apply-mlx-patches [--check] [--revert]
+
+PATCH 1 — chunk the APC store-side mx.eval.
+
+  apc.py's _clone_prompt_cache_for_apc collects every layer's copied K/V into one list and
+  dispatches a single mx.eval over all of it. For Qwen 3.8 27B at a 44k-token working set
+  that is ~2.9 GB in one dispatch, and it runs on EVERY request that stores a cache entry
+  (which, on the server path, is every request).
+
+  The same file already knows this is dangerous. The disk RESTORE path chunks its evals
+  via APC_DISK_EVAL_BLOCK_CHUNK, with this comment at apc.py:2884-2893:
+
+      "... three orders of magnitude below the all-at-once eval that has crashed Apple
+       Silicon hosts."
+
+  Upstream fixed the restore path and left the store path unchunked. This patch applies
+  the same treatment to the store path.
+
+  Measured motivation: three kernel panics on this machine, all with the MTP drafter and
+  APC active together, at 40, 10 and 8 cache entries — with memory nowhere near exhausted
+  (the last one had 17 GB free and server RSS flat at the model size). Two were
+  "pending memory object unexpectedly found in non pending hash" @IOGPUGroupMemory.cpp:528
+  and one was "completeMemory() prepare count underflow" @IOGPUMemory.cpp:550 — both GPU
+  memory-manager assertions, i.e. driver-level refcount races reached by allocation churn,
+  not by exhaustion.
+
+  Chunk size is APC_STORE_EVAL_CHUNK (default 8, matching the disk path's default).
+"""
+import argparse
+import re
+import shutil
+import sys
+from pathlib import Path
+
+VENV_PY = Path.home() / "Desktop/Programming/local_llm_bench/.mlxenv"
+APC = VENV_PY / "lib/python3.12/site-packages/mlx_vlm/apc.py"
+
+MARKER = "APC_STORE_EVAL_CHUNK"
+
+ORIGINAL = """    if eval_targets:
+        mx.eval(eval_targets)
+    return out
+"""
+
+PATCHED = '''    if eval_targets:
+        # PATCHED (local-setup/scripts/apply-mlx-patches): chunk this dispatch.
+        # Upstream chunks the disk RESTORE path (APC_DISK_EVAL_BLOCK_CHUNK) because the
+        # all-at-once eval "has crashed Apple Silicon hosts" (see apc.py:2884-2893), but
+        # left this store path unchunked — and it runs on every request. A 44k-token
+        # Qwen 3.8 27B snapshot is ~2.9 GB in a single dispatch.
+        _chunk = max(1, int(os.environ.get("APC_STORE_EVAL_CHUNK", "8")))
+        for _i in range(0, len(eval_targets), _chunk):
+            mx.eval(eval_targets[_i:_i + _chunk])
+    return out
+'''
+
+
+def status(text):
+    if MARKER in text:
+        return "patched"
+    if ORIGINAL in text:
+        return "unpatched"
+    return "unknown"
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--check", action="store_true", help="report state, change nothing")
+    ap.add_argument("--revert", action="store_true", help="restore the .orig backup")
+    args = ap.parse_args()
+
+    if not APC.exists():
+        sys.exit(f"not found: {APC}\n(set the venv path in this script if it moved)")
+
+    backup = APC.with_suffix(".py.orig")
+    text = APC.read_text()
+    state = status(text)
+
+    if args.check:
+        print(f"{APC}\n  state: {state}")
+        if state == "patched":
+            m = re.search(r"_chunk = max\(1, int\(os\.environ\.get\([^)]*\"(\d+)\"\)\)\)", text)
+            print(f"  default chunk: {m.group(1) if m else '?'}")
+        print(f"  backup: {'present' if backup.exists() else 'none'}")
+        return
+
+    if args.revert:
+        if not backup.exists():
+            sys.exit("no .orig backup to revert to")
+        shutil.copy2(backup, APC)
+        print(f"reverted {APC.name} from {backup.name}")
+        return
+
+    if state == "patched":
+        print("already patched — nothing to do")
+        return
+    if state == "unknown":
+        sys.exit("could not find the expected code in apc.py; mlx_vlm may have changed.\n"
+                 "Inspect _clone_prompt_cache_for_apc manually before patching.")
+
+    # os is already imported by apc.py for its many env lookups; assert rather than assume.
+    if not re.search(r"^import os$", text, re.M):
+        sys.exit("apc.py does not 'import os' at module level; patch would NameError")
+
+    if not backup.exists():
+        shutil.copy2(APC, backup)
+        print(f"backed up -> {backup.name}")
+
+    APC.write_text(text.replace(ORIGINAL, PATCHED, 1))
+    print(f"patched {APC}\n  store-side mx.eval now chunks at APC_STORE_EVAL_CHUNK (default 8)")
+
+
+if __name__ == "__main__":
+    main()
