@@ -8,10 +8,11 @@
 #     35b is GGUF via llama-server; mlx8/mlx6/mlx4 are MLX via mlx_vlm.server
 #   llm-serve stop              stop everything
 #   llm-serve status            what's running, and whether it answers
-#   llm-serve restart [model]   stop then start
+#   llm-serve restart [model]   stop then start (defaults to the resident model)
 #   llm-serve restart-proxy     reload just the proxy (keeps the model resident)
 #   llm-serve logs [server|proxy]  tail a log
 #   llm-serve which             the currently-loaded model
+#   llm-serve clean-disk        wipe the APC disk cache (see the disk tier below)
 
 set -euo pipefail
 
@@ -49,6 +50,31 @@ THINK_BUDGET="${LLM_THINK_BUDGET:--1}"
 # minute before the first visible token. Set LLM_EFFORT=xhigh to restore the model's
 # default, or low to trim further.
 LLM_EFFORT="${LLM_EFFORT:-medium}"
+
+# --- APC disk tier (MLX only) -------------------------------------------------
+# The in-RAM exact cache is bounded by ENTRY COUNT, not by bytes, and there is no
+# byte budget anywhere in apc.py. Each entry is a full deep-copied KV snapshot —
+# ~2.9 GB at a 44k-token working set — and every prefill stores TWO of them (see
+# the note above the launch line). A real Claude Code session issues several
+# requests per turn, so RAM capacity is spent in a handful of turns no matter how
+# high the count goes; 50-100 entries would be 150-300 GB on a 64 GB machine.
+#
+# The disk tier is the supported way past that ceiling. Evicted entries spill to
+# disk instead of being lost, and its restore path chunks its evals
+# (APC_DISK_EVAL_BLOCK_CHUNK) precisely because the unchunked in-memory one "has
+# crashed Apple Silicon hosts" — so it is also the *safer* of the two paths.
+#
+# LLM_APC_DISK=""  disables the tier entirely.
+APC_DISK="${LLM_APC_DISK-${STATE_DIR}/apc-disk}"
+# Bounded, NOT unbounded. APC_DISK_MAX_GB=0 means max_bytes=None, which makes the
+# eviction sweep return immediately (apc.py:1136) and the directory grow forever.
+# A real cap arms the LRU sweep: over the cap it evicts by mtime down to
+# _EVICT_LOW_WATERMARK (0.9), i.e. 120 GB -> ~108 GB, then keeps accepting.
+APC_DISK_GB="${LLM_APC_DISK_GB:-120}"
+# Before pulling a ~3 GB snapshot back into RAM, APC checks free RAM and skips the
+# restore (cold-prefilling instead) if it is below this. It is a swap guard, not a
+# size limit. Default in apc.py is 2.0, which is too tight next to a 15-28 GB model.
+APC_MIN_FREE_RAM_GB="${LLM_APC_MIN_FREE_RAM_GB:-8}"
 
 # The proxy lives next to this script.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -389,7 +415,12 @@ cmd_start() {
         mlx_think=(--thinking-budget "$THINK_BUDGET")
       fi
     fi
-    echo "starting $(model_family "$model")-${model} (MLX, ${mlx_label}, think budget ${THINK_BUDGET})"
+    local apc_label="APC off"
+    if [[ "${LLM_APC:-1}" != "0" ]]; then
+      apc_label="APC ${LLM_APC_ENTRIES:-8} entries"
+      [[ -n "$APC_DISK" ]] && apc_label="${apc_label} + disk ${APC_DISK_GB}GB"
+    fi
+    echo "starting $(model_family "$model")-${model} (MLX, ${mlx_label}, ${apc_label}, think budget ${THINK_BUDGET})"
     # APC_ENABLED defaults to "0" inside mlx_vlm, so prompt caching is off unless this is
     # set — a detail that silently invalidated a whole warm-cache measurement on 3.6.
     # KV stays unquantized: quantized KV plus MTP crashes this architecture at depth.
@@ -409,29 +440,49 @@ cmd_start() {
     # evicted before the follow-up arrived and each turn paid a full ~60s cold prefill.
     # Measured with three interleaved requests: 46.2s at 6 entries, 1.3s at 40.
     #
-    # But the count is bounded by RAM, not by how much history would be nice to have.
-    # Each snapshot is a real KV allocation: for this model a 24k-token prompt is about
-    # 1.5 GB (16 full-attention layers x 4 KV heads x 256 dim x 2 for K+V x 2 bytes x 24k
-    # tokens; the 48 GatedDeltaNet layers carry fixed-size recurrent state and add little).
-    # With a 28 GB model on a 64 GB machine, 10 entries is ~15 GB worst case with real
-    # headroom left.
+    # But the count is bounded by RAM, not by how much history would be nice to have,
+    # and NOTHING in apc.py enforces that bound — there is no byte budget, no high-water
+    # mark, and stats_snapshot()["resident_bytes"] reports 0 in exact mode because it
+    # walks only the block pool (apc.py:3456). RSS is the only honest signal.
     #
-    # 40 was tried and panicked the kernel — "pending memory object unexpectedly found in
-    # non pending hash" @IOGPUGroupMemory.cpp:528, a GPU memory-manager panic under the
-    # allocation churn. The measurement that made 40 look free was invalid: every test
-    # request shared a single prefix, so the snapshots shared storage and RSS never moved.
-    # Any change to this number must be measured with DISTINCT conversations.
-    # APC is OFF by default. Twice it panicked the kernel — "pending memory object
-    # unexpectedly found in non pending hash" @IOGPUGroupMemory.cpp:528, the same GPU
-    # memory-manager fault both times, at 40 entries and again at 10 with 13 GB still
-    # free. That rules out simple exhaustion: the fault is in the allocation pattern,
-    # where APC's "exact" mode deep-copies a whole ~1.5 GB KV snapshot into GPU memory on
-    # every prefill. A crash that takes the machine down is a worse failure than a slow
-    # first turn, so this stays off until it can be made safe.
+    # Each snapshot is a real KV allocation: 16 full-attention layers x 4 KV heads x 256
+    # dim x 2 for K+V x 2 bytes = 64 KB per token, plus ~72 MB of fixed recurrent state
+    # for the 48 GatedDeltaNet layers. That is ~1.5 GB at 24k tokens — but a real Claude
+    # Code session runs at 44-47k, where it is ~2.9 GB.
     #
-    # LLM_APC=1 re-enables it, LLM_APC_ENTRIES sets the count. Do not turn it on for
-    # unattended work.
-    APC_ENABLED="${LLM_APC:-1}" APC_EXACT_CACHE_ENTRIES="${LLM_APC_ENTRIES:-4}" detach "$MLX_PY" -m mlx_vlm.server \
+    # APC is ON, capped at 8 entries. Twice it panicked the kernel — "pending memory
+    # object unexpectedly found in non pending hash" @IOGPUGroupMemory.cpp:528, the same
+    # fault both times, at 40 entries and again at 10 with 13 GB still free. That rules
+    # out simple exhaustion: it is an assertion inside Apple's GPU memory manager, i.e. a
+    # driver defect that userspace should not be able to reach at all. What reaches it is
+    # allocation churn, and the exact-store path is the least disciplined code in APC —
+    # the server clones a snapshot twice on store (ar.py:2083 then apc.py:3132), a hit
+    # allocates a THIRD copy padded up to a 256-token boundary (apc.py:3109-3112), and the
+    # whole thing is mx.eval'd unchunked (apc.py:319-321). That is ~6-9 GB of transient
+    # large-buffer churn per request. The measurement that made 40 look free was invalid:
+    # every test request shared a single prefix, so the snapshots shared storage and RSS
+    # never moved. Any change to this number must be measured with DISTINCT conversations.
+    #
+    # So the count is a probability dial on a driver race, not a correctness setting.
+    # 8 keeps us strictly below the 10 that panicked; the disk tier (see the top of this
+    # file) is how you exceed RAM capacity without turning that dial up.
+    #
+    # LLM_APC=0 disables it, LLM_APC_ENTRIES sets the count. Note that 0 and -1 both mean
+    # DISABLED, not unlimited: apc.py:2868 is max(0, int(env)) and <= 0 is checked in four
+    # places as off. There is no unlimited value.
+    #
+    # These are exported rather than used as a `VAR=x cmd` prefix because `detach` is a
+    # shell function — `env` cannot invoke one, and an assignment prefix has to be literal
+    # at parse time, so a conditional set of disk vars cannot be spelled that way.
+    export APC_ENABLED="${LLM_APC:-1}"
+    export APC_EXACT_CACHE_ENTRIES="${LLM_APC_ENTRIES:-8}"
+    if [[ -n "$APC_DISK" ]]; then
+      mkdir -p "$APC_DISK"
+      export APC_DISK_PATH="$APC_DISK"
+      export APC_DISK_MAX_GB="$APC_DISK_GB"
+      export APC_DISK_MIN_FREE_RAM_GB="$APC_MIN_FREE_RAM_GB"
+    fi
+    detach "$MLX_PY" -m mlx_vlm.server \
       --model "$path" \
       ${mlx_spec[@]+"${mlx_spec[@]}"} \
       ${mlx_think[@]+"${mlx_think[@]}"} \
@@ -510,13 +561,37 @@ cmd_status() {
 case "${1:-status}" in
   start)   shift; cmd_start "${1:-35b}" ;;
   stop)    cmd_stop ;;
-  restart) shift; cmd_stop; cmd_start "${1:-35b}" ;;
+  # Read $CURRENT BEFORE cmd_stop, which deletes it. Defaulting to 35b here meant a bare
+  # `LLM_APC=0 llm-serve restart` silently swapped a resident MLX model for the 37 GB GGUF
+  # — and since APC and the drafter are MLX-only, every flag you were restarting to change
+  # became a no-op at the same time.
+  restart)
+    shift
+    _want="${1:-$(cat "$CURRENT" 2>/dev/null || echo 35b)}"
+    cmd_stop; cmd_start "$_want" ;;
   # Picking up a proxy edit shouldn't cost a 37 GB model reload.
   restart-proxy)
     stop_pidfile "$PROXY_PID" "proxy"
     start_proxy ;;
   status)  cmd_status ;;
   which)   cat "$CURRENT" 2>/dev/null || echo "nothing loaded" ;;
+  # Nothing in mlx_vlm ever removes these files: clear() (apc.py:3478) touches only the
+  # in-RAM pool and close() (:3495) just stops the writer thread. The 120 GB cap keeps the
+  # directory bounded on its own, so this is for reclaiming the space on demand or for
+  # forcing genuinely cold prefills when measuring.
+  clean-disk)
+    if [[ -z "$APC_DISK" ]]; then
+      echo "APC disk tier is disabled (LLM_APC_DISK is empty)"
+    elif [[ -d "$APC_DISK" ]]; then
+      sz="$(du -sh "$APC_DISK" 2>/dev/null | cut -f1)"
+      # Leave the directory itself in place: the server may be running and holds the path
+      # it was launched with, and DiskBlockStore._ensure_dir() only recreates it lazily.
+      rm -rf "${APC_DISK:?}"/* 2>/dev/null || true
+      echo "cleared APC disk cache at $APC_DISK (reclaimed ${sz:-0})"
+      is_running "$SERVER_PID" && echo "  note: server is running and may still hold entries in RAM" || true
+    else
+      echo "no APC disk cache at $APC_DISK"
+    fi ;;
   logs)
     case "${2:-server}" in
       proxy)  tail -f "$PROXY_LOG" ;;
