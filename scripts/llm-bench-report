@@ -1,0 +1,94 @@
+#!/usr/bin/env python3
+"""llm-bench-report — summarize llm-bench-turns output into a comparison table.
+
+Reads bench-results/<arm>.jsonl (one row per turn) and prints per-arm aggregates plus a
+per-turn trace. The two numbers that matter are the warm/cold split (did the cache hold
+across the run?) and decode tok/s split by cache state (does a hit cost throughput?).
+"""
+import json
+import statistics
+import sys
+from pathlib import Path
+
+RESULTS = Path(__file__).resolve().parent.parent / "bench-results"
+
+
+def load(arm):
+    rows = []
+    p = RESULTS / f"{arm}.jsonl"
+    if not p.exists():
+        return rows
+    for line in p.read_text().splitlines():
+        if line.strip():
+            rows.append(json.loads(line))
+    return rows
+
+
+def mean(xs):
+    xs = [x for x in xs if x is not None]
+    return statistics.mean(xs) if xs else None
+
+
+def fmt(x, nd=2):
+    return "—" if x is None else f"{x:.{nd}f}"
+
+
+def summarize(arm):
+    rows = load(arm)
+    if not rows:
+        print(f"\n{arm}: no data")
+        return None
+
+    # Split every request by whether ITS prefill hit the cache. A turn can contain both,
+    # so aggregating at turn level would blur exactly the comparison we care about.
+    warm_dec, cold_dec = [], []
+    for r in rows:
+        prefills = r.get("prefills", [])
+        reqs = r.get("requests", [])
+        for req, pre in zip(reqs, prefills):
+            warm = pre["cached_tokens"] > 0.5 * pre["prompt_tokens"]
+            (warm_dec if warm else cold_dec).append(req["decode_tps"])
+
+    tot_pref = sum(r["n_prefills"] for r in rows)
+    tot_warm = sum(r["n_warm_prefills"] for r in rows)
+
+    print(f"\n=== {arm} ===")
+    print(f"turns={len(rows)}  requests={sum(r['n_requests'] for r in rows)}  "
+          f"prefills={tot_pref}  warm={tot_warm} "
+          f"({100*tot_warm/max(1,tot_pref):.0f}%)")
+    print(f"wall total={sum(r['wall_s'] for r in rows)}s  "
+          f"median turn={fmt(statistics.median([r['wall_s'] for r in rows]),0)}s")
+    print(f"decode WARM={fmt(mean(warm_dec))} tok/s (n={len(warm_dec)})   "
+          f"COLD={fmt(mean(cold_dec))} tok/s (n={len(cold_dec)})")
+    rss = [r["server_rss_gb"] for r in rows if r.get("server_rss_gb")]
+    print(f"RSS  start={fmt(rss[0])}GB  peak={fmt(max(rss))}GB  end={fmt(rss[-1])}GB"
+          if rss else "RSS  —")
+    print(f"free RAM min={fmt(min(r['free_ram_gb'] for r in rows))}GB")
+
+    print("  turn  wall  reqs  warm/cold  ctx_max  gen   decode")
+    for r in rows:
+        print(f"  {r['turn']:>4}  {r['wall_s']:>4}s  {r['n_requests']:>4}  "
+              f"{r['n_warm_prefills']:>4}/{r['n_cold_prefills']:<4}  "
+              f"{r['max_prompt_tokens']:>7}  {r['total_generated']:>5}  "
+              f"{fmt(r['decode_tps_mean'])}")
+
+    return {"arm": arm, "warm": mean(warm_dec), "cold": mean(cold_dec),
+            "n_warm": len(warm_dec), "n_cold": len(cold_dec),
+            "warm_frac": tot_warm / max(1, tot_pref),
+            "wall": sum(r["wall_s"] for r in rows)}
+
+
+def main():
+    arms = sys.argv[1:] or sorted(p.stem for p in RESULTS.glob("*.jsonl")
+                                  if not p.stem.endswith(".cachestats"))
+    out = [s for s in (summarize(a) for a in arms) if s]
+    if len(out) > 1:
+        print("\n=== comparison ===")
+        print(f"{'arm':<28} {'warm dec':>9} {'cold dec':>9} {'warm%':>7} {'wall':>7}")
+        for s in out:
+            print(f"{s['arm']:<28} {fmt(s['warm']):>9} {fmt(s['cold']):>9} "
+                  f"{100*s['warm_frac']:>6.0f}% {s['wall']:>6}s")
+
+
+if __name__ == "__main__":
+    main()
