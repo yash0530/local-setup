@@ -356,7 +356,13 @@ cmd_start() {
     local mlx_spec=()
     local draft; draft="$(model_draft "$model")"
     local mlx_label="MTP off"
-    if [[ -d "$draft" && "${LLM_SPEC:-1}" != "0" ]]; then
+    # MTP defaults OFF on MLX. Both kernel panics happened with the drafter and the prompt
+    # cache active together — they are the two large GPU allocators, and APC deep-copies a
+    # ~1.5 GB KV snapshot per prefill on top of the drafter's own speculative cache. A
+    # six-turn run with APC on and no drafter was stable and cached every turn.
+    # The trade is lopsided: the drafter buys ~30% decode, the cache saves ~50s per turn.
+    # LLM_SPEC=1 turns it back on.
+    if [[ -d "$draft" && "${LLM_SPEC:-0}" == "1" ]]; then
       mlx_spec=(--draft-model "$draft" --draft-kind mtp
                 --draft-block-size "$(draft_n "$model")")
       mlx_label="MTP block=$(draft_n "$model")"
@@ -415,7 +421,17 @@ cmd_start() {
     # allocation churn. The measurement that made 40 look free was invalid: every test
     # request shared a single prefix, so the snapshots shared storage and RSS never moved.
     # Any change to this number must be measured with DISTINCT conversations.
-    APC_ENABLED=1 APC_EXACT_CACHE_ENTRIES="${LLM_APC_ENTRIES:-10}" detach "$MLX_PY" -m mlx_vlm.server \
+    # APC is OFF by default. Twice it panicked the kernel — "pending memory object
+    # unexpectedly found in non pending hash" @IOGPUGroupMemory.cpp:528, the same GPU
+    # memory-manager fault both times, at 40 entries and again at 10 with 13 GB still
+    # free. That rules out simple exhaustion: the fault is in the allocation pattern,
+    # where APC's "exact" mode deep-copies a whole ~1.5 GB KV snapshot into GPU memory on
+    # every prefill. A crash that takes the machine down is a worse failure than a slow
+    # first turn, so this stays off until it can be made safe.
+    #
+    # LLM_APC=1 re-enables it, LLM_APC_ENTRIES sets the count. Do not turn it on for
+    # unattended work.
+    APC_ENABLED="${LLM_APC:-1}" APC_EXACT_CACHE_ENTRIES="${LLM_APC_ENTRIES:-4}" detach "$MLX_PY" -m mlx_vlm.server \
       --model "$path" \
       ${mlx_spec[@]+"${mlx_spec[@]}"} \
       ${mlx_think[@]+"${mlx_think[@]}"} \
