@@ -149,6 +149,38 @@ does **not** read; `claude subagent` loads it for one session via
 scoped inside the `qwen-code` process — so plain `claude` always stays on your
 Pro subscription.
 
+### 3.5 OpenRouter Cloud LLM Integration (`claude open_router`)
+
+Claude Code can also connect to OpenRouter's Anthropic-compatible API gateway (such as `stealth/ox-alpha`).
+
+#### 1. Add your OpenRouter API key to `~/.zshrc`
+Add the `OPENROUTER_API_KEY` environment variable in your `~/.zshrc`:
+```bash
+export OPENROUTER_API_KEY="sk-or-v1-your-key-here"
+```
+Then reload your shell:
+```bash
+source ~/.zshrc
+```
+
+#### 2. Usage
+```bash
+# Interactive session with Ox Alpha (1M context window)
+claude open_router ox_alpha
+
+# Headless / one-shot execution
+claude open_router ox_alpha -p "summarize the architecture"
+
+# Any other OpenRouter model
+claude open_router <model_id>
+
+# Dedicated aliases
+claude_openrouter_ox_alpha
+claude_ox_alpha
+```
+
+The `openrouter-code` wrapper scopes the OpenRouter credentials and `ANTHROPIC_BASE_URL` strictly to that process, leaving plain `claude` completely on your official Anthropic subscription.
+
 ---
 
 ## 4. Claude Auto-Resume Daemon

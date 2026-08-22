@@ -14,16 +14,12 @@
 
 set -euo pipefail
 
-# OpenRouter API Key resolution: Environment variable -> ~/.openrouter_key
+# Ensure OPENROUTER_API_KEY is available in the environment
 if [[ -z "${OPENROUTER_API_KEY:-}" ]]; then
-  if [[ -f "$HOME/.openrouter_key" ]]; then
-    OPENROUTER_API_KEY="$(tr -d '\r\n ' < "$HOME/.openrouter_key")"
-  fi
-fi
-
-if [[ -z "${OPENROUTER_API_KEY:-}" ]]; then
-  echo "Error: OPENROUTER_API_KEY is not set." >&2
-  echo "Please set OPENROUTER_API_KEY in your environment or save it to ~/.openrouter_key" >&2
+  echo "Error: OPENROUTER_API_KEY environment variable is not set." >&2
+  echo "Add the following line to your ~/.zshrc:" >&2
+  echo '  export OPENROUTER_API_KEY="sk-or-v1-..."' >&2
+  echo "Then run: source ~/.zshrc" >&2
   exit 1
 fi
 
