@@ -64,8 +64,16 @@ LLM_EFFORT="${LLM_EFFORT:-medium}"
 # (APC_DISK_EVAL_BLOCK_CHUNK) precisely because the unchunked in-memory one "has
 # crashed Apple Silicon hosts" — so it is also the *safer* of the two paths.
 #
-# LLM_APC_DISK=""  disables the tier entirely.
-APC_DISK="${LLM_APC_DISK-${STATE_DIR}/apc-disk}"
+# DEFAULTS OFF, pending validation. The mechanism is sound on paper, but in the one run
+# that exercised it (3 turns, 18 requests, MTP off, 8 entries) it wrote 96 GB and served
+# ZERO reads: disk_hits=0, evictions=0. Nothing was ever evicted from the 8-entry RAM tier,
+# so the disk tier was pure write amplification — roughly 30 GB per turn of SSD wear for
+# no benefit. It only starts paying off once the RAM tier actually evicts, which needs
+# either a lower entry count or a longer session than has been measured.
+#
+# Set LLM_APC_DISK to a path to enable it, and watch disk_hits in /v1/cache/stats: if it
+# stays at 0, the tier is costing you writes for nothing.
+APC_DISK="${LLM_APC_DISK-}"
 # Bounded, NOT unbounded. APC_DISK_MAX_GB=0 means max_bytes=None, which makes the
 # eviction sweep return immediately (apc.py:1136) and the directory grow forever.
 # A real cap arms the LRU sweep: over the cap it evicts by mtime down to
@@ -451,7 +459,7 @@ cmd_start() {
       fi
     fi
     local apc_label="APC off"
-    if [[ "${LLM_APC:-1}" != "0" ]]; then
+    if [[ "${LLM_APC:-0}" != "0" ]]; then
       apc_label="APC ${LLM_APC_ENTRIES:-6} entries"
       [[ -n "$APC_DISK" ]] && apc_label="${apc_label} + disk ${APC_DISK_GB}GB"
     fi
@@ -511,7 +519,7 @@ cmd_start() {
     # These are exported rather than used as a `VAR=x cmd` prefix because `detach` is a
     # shell function — `env` cannot invoke one, and an assignment prefix has to be literal
     # at parse time, so a conditional set of disk vars cannot be spelled that way.
-    export APC_ENABLED="${LLM_APC:-1}"
+    export APC_ENABLED="${LLM_APC:-0}"
     export APC_EXACT_CACHE_ENTRIES="${LLM_APC_ENTRIES:-6}"
     if [[ -n "$APC_DISK" ]]; then
       mkdir -p "$APC_DISK"
@@ -617,9 +625,11 @@ case "${1:-status}" in
   # directory bounded on its own, so this is for reclaiming the space on demand or for
   # forcing genuinely cold prefills when measuring.
   clean-disk)
-    if [[ -z "$APC_DISK" ]]; then
-      echo "APC disk tier is disabled (LLM_APC_DISK is empty)"
-    elif [[ -d "$APC_DISK" ]]; then
+    # Fall back to the conventional path when the tier is disabled, so leftovers from a
+    # session that HAD it enabled are still reclaimable — that is exactly when someone
+    # reaches for this command.
+    [[ -z "$APC_DISK" ]] && APC_DISK="${STATE_DIR}/apc-disk"
+    if [[ -d "$APC_DISK" ]]; then
       sz="$(du -sh "$APC_DISK" 2>/dev/null | cut -f1)"
       # Leave the directory itself in place: the server may be running and holds the path
       # it was launched with, and DiskBlockStore._ensure_dir() only recreates it lazily.
