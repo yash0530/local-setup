@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+# openrouter-code — Claude Code connected via OpenRouter API.
+#
+# Routes Claude Code to OpenRouter's Anthropic Messages API gateway.
+# Supports stealth/ox-alpha and other OpenRouter models.
+#
+# Usage:
+#   openrouter-code                           # interactive session with default model (ox-alpha)
+#   openrouter-code --model ox_alpha          # interactive session with ox-alpha
+#   openrouter-code --model <model_id>        # any other OpenRouter model
+#   openrouter-code -p "prompt"               # headless one-shot
+#
+# Every other argument is passed through to `claude` untouched.
+
+set -euo pipefail
+
+# OpenRouter API Key resolution: Environment variable -> ~/.openrouter_key
+if [[ -z "${OPENROUTER_API_KEY:-}" ]]; then
+  if [[ -f "$HOME/.openrouter_key" ]]; then
+    OPENROUTER_API_KEY="$(tr -d '\r\n ' < "$HOME/.openrouter_key")"
+  fi
+fi
+
+if [[ -z "${OPENROUTER_API_KEY:-}" ]]; then
+  echo "Error: OPENROUTER_API_KEY is not set." >&2
+  echo "Please set OPENROUTER_API_KEY in your environment or save it to ~/.openrouter_key" >&2
+  exit 1
+fi
+
+WANT_MODEL="stealth/ox-alpha"
+if [[ "${1:-}" == "--model" ]]; then
+  WANT_MODEL="${2:-stealth/ox-alpha}"
+  shift 2
+fi
+
+case "$WANT_MODEL" in
+  ox_alpha|ox-alpha|ox|oxalpha)
+    MODEL="stealth/ox-alpha"
+    ;;
+  *)
+    MODEL="$WANT_MODEL"
+    ;;
+esac
+
+# ANTHROPIC_API_KEY would take precedence over ANTHROPIC_AUTH_TOKEN and send
+# real traffic to Anthropic, so it is explicitly cleared for this process.
+unset ANTHROPIC_API_KEY
+
+exec env \
+  OPENROUTER_API_KEY="$OPENROUTER_API_KEY" \
+  ANTHROPIC_BASE_URL="https://openrouter.ai/api" \
+  ANTHROPIC_AUTH_TOKEN="$OPENROUTER_API_KEY" \
+  ANTHROPIC_API_KEY="" \
+  ANTHROPIC_MODEL="$MODEL" \
+  ANTHROPIC_DEFAULT_SONNET_MODEL="$MODEL" \
+  ANTHROPIC_DEFAULT_HAIKU_MODEL="$MODEL" \
+  ANTHROPIC_SMALL_FAST_MODEL="$MODEL" \
+  ANTHROPIC_DEFAULT_OPUS_MODEL="$MODEL" \
+  CLAUDE_CODE_MAX_CONTEXT_TOKENS="${CLAUDE_CODE_MAX_CONTEXT_TOKENS:-1048576}" \
+  CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1 \
+  CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
+  claude --dangerously-skip-permissions "$@"

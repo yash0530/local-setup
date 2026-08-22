@@ -80,11 +80,12 @@ Plain `claude` behaves exactly as the old `alias claude="claude
 --dangerously-skip-permissions"` did:
 
 ```bash
-claude                   # Pro subscription, --dangerously-skip-permissions
-claude local qwen38_27   # local 27B dense
-claude local qwen36_35   # local 35B A3B MoE
-claude local             # whichever model is already resident
-claude subagent          # Pro + the opt-in local delegation subagent
+claude                       # Pro subscription, --dangerously-skip-permissions
+claude open_router ox_alpha  # OpenRouter (Stealth Ox Alpha)
+claude local qwen38_27       # local 27B dense
+claude local qwen36_35       # local 35B A3B MoE
+claude local                 # whichever model is already resident
+claude subagent              # Pro + the opt-in local delegation subagent
 ```
 
 Every branch forwards `"$@"`, so flags survive: `claude -p "..."`,

@@ -85,11 +85,11 @@ mkdir -p "$HOME/.local/bin"
 # failure is confusing rather than loud: PATH keeps running an old script while the repo
 # shows the new one, so a model alias added here produced "unknown model" from a
 # months-old copy. Symlinks cannot drift.
-for tool in llm-serve llm-proxy.mjs qwen qwen-code claude-local-subagent; do
+for tool in llm-serve llm-proxy.mjs qwen qwen-code openrouter-code claude-local-subagent; do
   ln -sfn "$REPO_DIR/scripts/$tool" "$HOME/.local/bin/$tool"
   chmod +x "$REPO_DIR/scripts/$tool"
 done
-echo "  installed: llm-serve, qwen, qwen-code, claude-local-subagent (+ llm-proxy)"
+echo "  installed: llm-serve, qwen, qwen-code, openrouter-code, claude-local-subagent (+ llm-proxy)"
 
 # 6. Append zshrc snippet to ~/.zshrc
 ZSHRC="$HOME/.zshrc"
