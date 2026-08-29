@@ -48,14 +48,16 @@ exec env \
   ANTHROPIC_MODEL="qwen-local" \
   ANTHROPIC_SMALL_FAST_MODEL="qwen-local" \
   ANTHROPIC_DEFAULT_HAIKU_MODEL="qwen-local" \
-  CLAUDE_CODE_MAX_CONTEXT_TOKENS="${LLM_CTX:-65536}" \
+  CLAUDE_CODE_MAX_CONTEXT_TOKENS="${LLM_CTX:-81920}" \
   `# 65536 (estimated tokens), not the model's 262144: on mlx4+APC the Metal OOMs from APC's snapshot` \
   `# clone (apc.py:321) start sporadically at ~40-50k real ctx and are total by ~75k` \
   `# (vacation-run arm 1, 2026-08-28); on mlx6 the same pressure kernel-panicked the` \
   `# machine (IOGPUMemory.cpp:550). Capping makes Claude Code compact before the` \
   `# danger zone. The count_tokens estimate (chars/3.5) overshoots real tokens, so` \
   `# 40960 and 49152 both blocked fresh sessions ("Prompt is too long" client-side);` \
-  `# at 65536 estimated, real context tops out ~35-45k — under the OOM zone.` \
+  `# at 65536 estimated, real ctx topped out ~35-45k. Raised to 81920 after` \
+  `# apply-single-clone-patch cut the per-store transient spike ~1/3 (2026-08-29),` \
+  `# moving the expected OOM onset to ~55-70k real.` \
   CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
   API_TIMEOUT_MS="${API_TIMEOUT_MS:-1800000}" \
   CLAUDE_STREAM_IDLE_TIMEOUT_MS="${CLAUDE_STREAM_IDLE_TIMEOUT_MS:-1800000}" \

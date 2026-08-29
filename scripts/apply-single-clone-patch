@@ -1,0 +1,122 @@
+#!/usr/bin/env python3
+"""apply-single-clone-patch — store one clone per APC exact store, not two.
+
+On the continuous-batching path (mlx_vlm.server), every exact-mode APC store
+clones the prompt cache TWICE: `_apc_prompt_cache_for_store` (ar.py) calls
+`snapshot_prompt_cache_row`, which already returns a fresh APC-normalized clone
+(`apc.py:snapshot_prompt_cache_row` -> `_clone_prompt_cache_for_apc`), and then
+`store_exact_cache` unconditionally clones that clone again (`apc.py:3146`).
+At ~45k tokens that is ~8.7 GB transient GPU allocation per store, roughly a
+third of it pure redundancy — the transient spike behind the Metal OOMs at
+~40-50k ctx (mlx4) and the 2026-08-28 IOGPUMemory.cpp:550 panic (mlx6).
+Upstream fixes the same thing with take_ownership in PR #2072 (unmerged, and
+against a newer tree); this is the same one-line idea applied to 0.6.17.
+
+The patch: `store_exact_cache` grows `take_ownership: bool = False`; when True
+it keeps the passed-in cache (`list(prompt_cache)`) instead of re-cloning. The
+two ar.py call sites whose argument is already a private clone pass True. The
+dispatch.py sites pass the LIVE cache and are deliberately untouched. After the
+clone, `copied` is only ever retained (memory entry / disk save), never
+mutated, so ownership transfer is safe.
+
+    scripts/apply-single-clone-patch [--check] [--revert]
+
+Reverts by reverse string-replacement (NOT from .orig backups — those predate
+apply-latest-only-patch and would undo it too). Idempotent, string-matched,
+same approach as apply-latest-only-patch; honours LLM_MLX_VENV.
+"""
+import argparse
+import os
+import sys
+from pathlib import Path
+
+VENV = Path(os.environ.get("LLM_MLX_VENV",
+                           str(Path.home() / "Desktop/Programming/local_llm_bench/.mlxenv-0617")))
+APC = VENV / "lib/python3.12/site-packages/mlx_vlm/apc.py"
+AR = VENV / "lib/python3.12/site-packages/mlx_vlm/generate/ar.py"
+
+MARKER = "take_ownership"
+
+EDITS = [
+    (APC, '''    def store_exact_cache(
+        self,
+        token_ids: Sequence[int],
+        prompt_cache: Sequence[Any],
+        *,
+        extra_hash: int = 0,
+    ) -> bool:''',
+     '''    def store_exact_cache(
+        self,
+        token_ids: Sequence[int],
+        prompt_cache: Sequence[Any],
+        *,
+        extra_hash: int = 0,
+        take_ownership: bool = False,
+    ) -> bool:'''),
+    (APC, '''        token_tuple = tuple(int(t) for t in token_ids)
+        copied = _clone_prompt_cache_for_apc(prompt_cache)''',
+     '''        token_tuple = tuple(int(t) for t in token_ids)
+        # PATCHED (local-setup/scripts/apply-single-clone-patch): a caller that
+        # already owns a private clone passes take_ownership=True; re-cloning it
+        # here doubled the multi-GB transient GPU allocation per store.
+        copied = list(prompt_cache) if take_ownership else _clone_prompt_cache_for_apc(prompt_cache)'''),
+    (AR, '''            self._apc_manager.store_exact_cache(
+                meta["full_input_ids"][:checkpoint_len],
+                prompt_cache,
+                extra_hash=meta.get("extra_hash", 0),
+            )
+            meta["checkpoint_done"] = True''',
+     '''            self._apc_manager.store_exact_cache(
+                meta["full_input_ids"][:checkpoint_len],
+                prompt_cache,
+                extra_hash=meta.get("extra_hash", 0),
+                # PATCHED (apply-single-clone-patch): prompt_cache is already a
+                # private clone from _apc_prompt_cache_for_store.
+                take_ownership=True,
+            )
+            meta["checkpoint_done"] = True'''),
+    (AR, '''                            self._apc_manager.store_exact_cache(
+                                meta["full_input_ids"],
+                                prompt_cache,
+                                extra_hash=meta.get("extra_hash", 0),
+                            )''',
+     '''                            self._apc_manager.store_exact_cache(
+                                meta["full_input_ids"],
+                                prompt_cache,
+                                extra_hash=meta.get("extra_hash", 0),
+                                # PATCHED (apply-single-clone-patch): already a
+                                # private clone, same as the checkpoint site.
+                                take_ownership=True,
+                            )'''),
+]
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--check", action="store_true")
+    ap.add_argument("--revert", action="store_true")
+    args = ap.parse_args()
+
+    if args.check:
+        for p in (APC, AR):
+            text = p.read_text()
+            print(f"{p.name}: {'patched' if MARKER in text else 'unpatched'}")
+        return
+
+    for path, original, patched in EDITS:
+        text = path.read_text()
+        src, dst = (patched, original) if args.revert else (original, patched)
+        if dst in text:
+            print(f"{path.name}: edit already {'reverted' if args.revert else 'applied'}")
+            continue
+        if src not in text:
+            sys.exit(f"could not find the expected code in {path.name}; mlx_vlm may have "
+                     "changed. Inspect the store path manually before patching.")
+        path.write_text(text.replace(src, dst, 1))
+        print(f"{path.name}: {'reverted' if args.revert else 'patched'} one site")
+
+    print("done." if not args.revert else "reverted.")
+
+
+if __name__ == "__main__":
+    main()
