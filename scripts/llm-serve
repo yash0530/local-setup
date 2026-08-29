@@ -390,7 +390,8 @@ cmd_start() {
     local mlx_spec=()
     local draft; draft="$(model_draft "$model")"
     local mlx_label="MTP off"
-    # MTP defaults OFF on MLX, and the reason is now measured rather than assumed.
+    # MTP defaulted OFF on MLX after the four panics documented below; since 2026-08-22
+    # it defaults back to ON — see the UPDATE note at the end of this block.
     #
     # DO NOT set LLM_SPEC=1 while APC is enabled. Four kernel panics, every one of them
     # with the drafter and the prompt cache active together:
@@ -431,7 +432,18 @@ cmd_start() {
     # and the cache is worth more: a typical ~200-token request costs ~24s with APC and no
     # drafter, versus ~94s with the drafter and no cache. Caching wins below ~1300
     # generated tokens per request, which is nearly every Claude Code request.
-    if [[ -d "$draft" && "${LLM_SPEC:-0}" == "1" ]]; then
+    #
+    # UPDATE 2026-08-22: the DRAFTER-only theory is now falsified too. With
+    # APC_EXACT_CACHE_ENTRIES=2 (not 4–40), apply-latest-only-patch removing the dead
+    # full-prompt store (one multi-GB copy per cold prefill instead of two), and
+    # llm-proxy.mjs stripVolatile also covering the periodic task-tools nudge,
+    # MTP+APC together ran a full multi-turn Claude Code session — 14 turns, zero
+    # panics, median turn 41s / best 9s vs 134s / 42s without the drafter
+    # (local_llm_bench/results/overnight/). What the four panics needed was churn
+    # volume: many live snapshots × two copies each. Entries=2 plus checkpoint-only
+    # stores cuts both axes. So LLM_SPEC now defaults to 1 alongside APC; set
+    # LLM_SPEC=0 for cache-only.
+    if [[ -d "$draft" && "${LLM_SPEC:-1}" == "1" ]]; then
       mlx_spec=(--draft-model "$draft" --draft-kind mtp
                 --draft-block-size "$(draft_n "$model")")
       mlx_label="MTP block=$(draft_n "$model")"
@@ -459,8 +471,8 @@ cmd_start() {
       fi
     fi
     local apc_label="APC off"
-    if [[ "${LLM_APC:-0}" != "0" ]]; then
-      apc_label="APC ${LLM_APC_ENTRIES:-6} entries"
+    if [[ "${LLM_APC:-1}" != "0" ]]; then
+      apc_label="APC ${LLM_APC_ENTRIES:-2} entries"
       [[ -n "$APC_DISK" ]] && apc_label="${apc_label} + disk ${APC_DISK_GB}GB"
     fi
     echo "starting $(model_family "$model")-${model} (MLX, ${mlx_label}, ${apc_label}, think budget ${THINK_BUDGET})"
@@ -519,8 +531,15 @@ cmd_start() {
     # These are exported rather than used as a `VAR=x cmd` prefix because `detach` is a
     # shell function — `env` cannot invoke one, and an assignment prefix has to be literal
     # at parse time, so a conditional set of disk vars cannot be spelled that way.
-    export APC_ENABLED="${LLM_APC:-0}"
-    export APC_EXACT_CACHE_ENTRIES="${LLM_APC_ENTRIES:-6}"
+    export APC_ENABLED="${LLM_APC:-1}"
+    # 2 entries = the proven-stable count (see the MTP block above): one live slot plus
+    # one history slot for interleaved requests. apply-latest-only-patch makes each
+    # cold prefill store only the checkpoint, so N entries hold N distinct states.
+    export APC_EXACT_CACHE_ENTRIES="${LLM_APC_ENTRIES:-2}"
+    # The full-prompt entry can never match a continuation; skipping it halves per-cold
+    # GPU copy churn. Patch default is skip=1; exported here so LLM_APC_SKIP_FULL_STORE=0
+    # restores upstream behaviour without touching the venv.
+    export APC_SKIP_FULL_STORE="${LLM_APC_SKIP_FULL_STORE:-1}"
     if [[ -n "$APC_DISK" ]]; then
       mkdir -p "$APC_DISK"
       export APC_DISK_PATH="$APC_DISK"

@@ -286,9 +286,11 @@ misleadingly, and anyone reproducing this by hand will hit them.
 | `--enable-thinking` is off by default | **Silent.** Template emits a pre-closed `<think></think>`, Qwen 3.8 answers with no reasoning, requests look fine |
 | `chat_template_kwargs` is ignored | `PROXY_THINK` cannot control thinking; only the server flag decides |
 | `--thinking-budget` + speculative decoding | `thinking_budget is not supported with speculative decoding in the server` |
-| `APC_ENABLED` defaults to `"0"` | **Silent.** Prompt caching off, so every turn re-prefills the whole preamble |
+| `APC_ENABLED` defaults to `"0"` upstream | **Silent.** Prompt caching off, so every turn re-prefills the whole preamble. `llm-serve` exports `1` (with `APC_EXACT_CACHE_ENTRIES=2` and `APC_SKIP_FULL_STORE=1`) since 2026-08-22 |
 
-Quantized KV plus MTP also crashes this architecture at depth, so KV stays fp16.
+Quantized KV (`--kv-bits`) also breaks this architecture: since the 2026-08-22 runs it
+silently truncates streaming tool-call responses (the stream ends without a
+`finish_reason` chunk), so Claude Code turns end mid-flight. KV stays fp16.
 
 Only the second and fifth produce plausible-looking output while being wrong, which makes
 them the expensive ones: the model answers, just not the way it is supposed to.

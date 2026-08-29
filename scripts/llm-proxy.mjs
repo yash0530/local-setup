@@ -390,11 +390,18 @@ function blocksToText(content) {
  * one more of them per turn — measured 2 blocks on turn 1, 3 on turn 2 — which moved the
  * first divergence to char 15036 of 15924 and defeated the cache completely. The note is
  * advisory about remaining budget and carries nothing a local model can act on.
+ *
+ * Second pattern, measured 2026-08-22 (overnight runs): the periodic "The task tools
+ * haven't been used recently…" nudge is injected mid-system-prompt and even swaps
+ * position with the adjacent <system-reminder> block between renders — divergence at
+ * 46–79% depth, one ~60s full re-prefill every ~5th request. Like the budget note it is
+ * harness housekeeping with no local-model value, so it goes too.
  */
 function stripVolatile(text) {
   if (!text) return text;
   return text
     .replace(/\n*<total_tokens>[\s\S]*?<\/total_tokens>/g, "")
+    .replace(/\n*The task tools haven't been used recently[\s\S]*?(?=\n\n|<system-reminder>|$)/g, "")
     .replace(/\n{3,}/g, "\n\n")
     .trimEnd();
 }

@@ -44,8 +44,8 @@ claude() {
           # because it is closest to the reference and quality below 8-bit is not yet
           # measured. 6 is ~24% faster per warm turn and 7 GB smaller.
           shift
-          local _bits=8
-          if [[ "${1:-}" == "--bits" ]]; then _bits="${2:-8}"; shift 2; fi
+          local _bits=4
+          if [[ "${1:-}" == "--bits" ]]; then _bits="${2:-4}"; shift 2; fi
           local _m
           case "$_bits" in
             8) _m=mlx8 ;;

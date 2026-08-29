@@ -1,0 +1,137 @@
+#!/usr/bin/env python3
+"""apply-latest-only-patch — keep only the checkpoint APC entry, drop the full-prompt one.
+
+mlx_vlm lives in a venv outside this repo, so this applies edits by string match,
+is idempotent, and reports what it did — same approach as scripts/apply-mlx-patches.
+
+    scripts/apply-latest-only-patch [--check] [--revert]
+
+PATCH — skip the dead full-prompt snapshot (checkpoint-only stores).
+
+In exact mode every cold prefill stores TWO whole-cache snapshots:
+
+  1. a checkpoint at len(guard=16), fired mid-chunked-prefill
+     (generate/dispatch.py, passed as prompt_cache_checkpoint into generate_step;
+     continuous-batching equivalent in generate/ar.py:_store_apc_exact_checkpoints)
+  2. the FULL prompt, stored at n == 0 immediately after prefill
+     (generate/dispatch.py inside the generation loop; generate/ar.py prefill-harvest)
+
+The full-prompt entry is provably useless for continuation: the next turn's prompt
+diverges from it at the <think>/assistant tail, and exact-mode lookup requires a
+byte-identical strict prefix (apc.py lookup_exact_cache). Only the checkpoint ever
+matches anything forward — so entry #2 doubles snapshot memory AND doubles the
+multi-GB mx.contiguous deep-copy churn implicated in the IOGPU kernel panics
+(see scripts/apply-mlx-patches for that history).
+
+This patch gates ONLY the two full-prompt stores behind
+APC_SKIP_FULL_STORE (default "1" = skip; set "0" to restore upstream behaviour).
+Checkpoints are untouched. With APC_EXACT_CACHE_ENTRIES=2 this yields true
+latest-only semantics: the last two turns' checkpoints, nothing else.
+"""
+import argparse
+import shutil
+import sys
+from pathlib import Path
+
+VENV = Path.home() / "Desktop/Programming/local_llm_bench/.mlxenv"
+DISPATCH = VENV / "lib/python3.12/site-packages/mlx_vlm/generate/dispatch.py"
+AR = VENV / "lib/python3.12/site-packages/mlx_vlm/generate/ar.py"
+
+MARKER = "APC_SKIP_FULL_STORE"
+
+DISPATCH_ORIGINAL = '''                if (
+                    apc_manager is not None
+                    and apc_mode == "exact"
+                    and reused_prefix_len == 0
+                ):'''
+
+DISPATCH_PATCHED = '''                if (
+                    apc_manager is not None
+                    and apc_mode == "exact"
+                    and reused_prefix_len == 0
+                    # PATCHED (local-setup/scripts/apply-latest-only-patch):
+                    # the full-prompt snapshot never matches a continuation
+                    # (next turn diverges at the assistant tail); skipping it
+                    # halves snapshot bytes and copy churn. Checkpoint stores
+                    # are unaffected. Set APC_SKIP_FULL_STORE=0 for upstream.
+                    and _apc.os.environ.get("APC_SKIP_FULL_STORE", "1") != "0"
+                ):'''
+
+AR_ORIGINAL = '''                for batch_idx, meta in enumerate(self._apc_meta):
+                    if meta is None:
+                        continue
+                    if self._apc_mode == "exact":
+                        prompt_cache = self._apc_prompt_cache_for_store(batch_idx)
+                        if prompt_cache is not None:
+                            self._apc_manager.store_exact_cache('''
+
+AR_PATCHED = '''                for batch_idx, meta in enumerate(self._apc_meta):
+                    if meta is None:
+                        continue
+                    # PATCHED (local-setup/scripts/apply-latest-only-patch):
+                    # exact-mode full-prompt harvest skipped — dead entry, see
+                    # scripts/apply-latest-only-patch docstring. Block-mode
+                    # commit_prefix_blocks below is untouched. Set
+                    # APC_SKIP_FULL_STORE=0 for upstream behaviour.
+                    if self._apc_mode == "exact" and _apc.os.environ.get("APC_SKIP_FULL_STORE", "1") != "0":
+                        prompt_cache = self._apc_prompt_cache_for_store(batch_idx)
+                        if prompt_cache is not None:
+                            self._apc_manager.store_exact_cache('''
+
+
+def status(text):
+    return "patched" if MARKER in text else (
+        "unpatched" if ("store_exact_cache" in text) else "unknown")
+
+
+def process(path, original, patched):
+    if not path.exists():
+        sys.exit(f"not found: {path}")
+    backup = path.with_suffix(".py.orig")
+    text = path.read_text()
+    state = status(text)
+    if MARKER in text:
+        print(f"{path.name}: already patched")
+        return
+    if original not in text:
+        sys.exit(f"could not find the expected code in {path.name}; mlx_vlm may have "
+                 "changed.\nInspect the full-prompt store site manually before patching.")
+    if not backup.exists():
+        shutil.copy2(path, backup)
+        print(f"{path.name}: backed up -> {backup.name}")
+    path.write_text(text.replace(original, patched, 1))
+    print(f"{path.name}: patched")
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--check", action="store_true", help="report state, change nothing")
+    ap.add_argument("--revert", action="store_true",
+                    help="restore both files from their .orig backups")
+    args = ap.parse_args()
+
+    if args.check:
+        for p in (DISPATCH, AR):
+            backup = p.with_suffix(".py.orig")
+            print(f"{p}\n  state: {status(p.read_text())}\n"
+                  f"  backup: {'present' if backup.exists() else 'none'}")
+        return
+
+    if args.revert:
+        for p in (DISPATCH, AR):
+            backup = p.with_suffix(".py.orig")
+            if not backup.exists():
+                print(f"{p.name}: no .orig backup, leaving alone")
+                continue
+            shutil.copy2(backup, p)
+            print(f"{p.name}: reverted")
+        return
+
+    process(DISPATCH, DISPATCH_ORIGINAL, DISPATCH_PATCHED)
+    process(AR, AR_ORIGINAL, AR_PATCHED)
+    print(f"\ndone. Full-prompt stores now gated by {MARKER} (default skip).\n"
+          f"Restart mlx_vlm.server for it to take effect.")
+
+
+if __name__ == "__main__":
+    main()
