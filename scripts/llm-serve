@@ -126,7 +126,9 @@ model_draft() {
 
 # Python that has mlx_vlm installed. Defaults to the benchmark repo's venv; override with
 # LLM_MLX_PY if that repo moves.
-MLX_PY="${LLM_MLX_PY:-${HOME}/Desktop/Programming/local_llm_bench/.mlxenv/bin/python}"
+# .mlxenv-0617: mlx 0.32.2 + mlx-vlm 0.6.17 (ArraysCache Metal-leak fix, DFlash2/DSpark
+# drafters), latest-only patch applied 2026-08-28. Old .mlxenv (0.6.15) kept as fallback.
+MLX_PY="${LLM_MLX_PY:-${HOME}/Desktop/Programming/local_llm_bench/.mlxenv-0617/bin/python}"
 
 # Display name for a model alias. The family is no longer implied by the script: the two
 # aliases are now different Qwen generations, so a hardcoded prefix would mislabel one.
@@ -443,10 +445,21 @@ cmd_start() {
     # volume: many live snapshots × two copies each. Entries=2 plus checkpoint-only
     # stores cuts both axes. So LLM_SPEC now defaults to 1 alongside APC; set
     # LLM_SPEC=0 for cache-only.
+    # LLM_DRAFT overrides the drafter weights dir (e.g. ~/Models/qwen3.8-27b-dspark);
+    # LLM_DRAFT_KIND picks the family ('mtp' default; 'auto' omits the flag so the
+    # server detects it from the drafter's model_type — needed for DSpark/DFlash2,
+    # whose kinds aren't in 0.6.17's --draft-kind enum).
+    draft="${LLM_DRAFT:-$draft}"
+    local draft_kind="${LLM_DRAFT_KIND:-mtp}"
     if [[ -d "$draft" && "${LLM_SPEC:-1}" == "1" ]]; then
-      mlx_spec=(--draft-model "$draft" --draft-kind mtp
-                --draft-block-size "$(draft_n "$model")")
-      mlx_label="MTP block=$(draft_n "$model")"
+      if [[ "$draft_kind" == "auto" ]]; then
+        mlx_spec=(--draft-model "$draft"
+                  --draft-block-size "$(draft_n "$model")")
+      else
+        mlx_spec=(--draft-model "$draft" --draft-kind "$draft_kind"
+                  --draft-block-size "$(draft_n "$model")")
+      fi
+      mlx_label="drafter=$(basename "$draft") kind=${draft_kind} block=$(draft_n "$model")"
     fi
     # --enable-thinking is not optional for this model. Without it the server leaves
     # thinking off for requests that do not set `enable_thinking` themselves, the chat

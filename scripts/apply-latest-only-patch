@@ -33,7 +33,9 @@ import shutil
 import sys
 from pathlib import Path
 
-VENV = Path.home() / "Desktop/Programming/local_llm_bench/.mlxenv"
+import os
+VENV = Path(os.environ.get("LLM_MLX_VENV",
+                           str(Path.home() / "Desktop/Programming/local_llm_bench/.mlxenv")))
 DISPATCH = VENV / "lib/python3.12/site-packages/mlx_vlm/generate/dispatch.py"
 AR = VENV / "lib/python3.12/site-packages/mlx_vlm/generate/ar.py"
 
