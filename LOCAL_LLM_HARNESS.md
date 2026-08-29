@@ -187,6 +187,29 @@ every turn; on 3.8 its prompt cache engages.
 The speed gap above still holds against the 35B, so it remains the default for
 agent loops. The MLX 27B narrows the gap rather than closing it.
 
+**Update 2026-08-28 — 27B quant settled: `mlx4` only.** The vacation-run campaign
+(`local_llm_bench/results/vacation-run/`) upgraded the runtime to mlx-vlm 0.6.17
+(fixes a per-token Metal-handle leak on hybrid models) and tested every quant and
+drafter through real Claude Code sessions. Verdicts, all measured:
+
+- **Quant: `mlx4`.** Not just fastest — the only quant that can hold a warm cache
+  safely on 64 GB. `mlx6`+APC kernel-panicked the machine
+  (`IOGPUMemory.cpp:550`, same assertion as the Aug 15/16 panics); the trigger is
+  APC's multi-GB snapshot clone near the GPU wired limit, and `mlx8` has even less
+  headroom. 8/6-bit warm-cache serving is disqualified on this machine.
+- **Drafter: MTP block=3.** The new DFlash2 drafter silently bypasses APC (0% warm,
+  turns 2–5× slower end-to-end); DSpark cannot load under 0.6.17 (upstream config
+  validator bug). MTP held 97% warm across a 12-turn session.
+- **Cache entries: 2.** `ENTRIES=1` gives a 0% hit rate (the single slot is always
+  the wrong entry); 2 is true latest-only plus the one live slot.
+- **Context cap: `qwen-code` now defaults `CLAUDE_CODE_MAX_CONTEXT_TOKENS=65536`**
+  (estimated tokens ≈ 35–45k real), because on mlx4 the snapshot-clone Metal OOMs
+  start at ~40–50k real ctx and are total by ~75k. 40960/49152 were tried and block
+  fresh sessions outright ("Prompt is too long" — the chars/3.5 estimate overshoots).
+- Measured on the adopted config: trivial warm turn **4 s**, substantive warm turns
+  37–82 s, warm prefill 0.9–9 s at 20–28k tokens, decode ~21–22 tok/s, zero panics
+  and zero Metal OOMs across the verification session.
+
 ---
 
 ## 4. The serving config — and why it differs from the benchmark's
