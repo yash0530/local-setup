@@ -91,7 +91,7 @@ PROXY_JS="${SCRIPT_DIR}/llm-proxy.mjs"
 # --- model registry (Q8 GGUFs, MTP draft depth = benchmarked peak) ------------
 # Single list of valid aliases, used for validation, error messages, and recovering
 # which model a running server is serving.
-MODEL_ALIASES="35b mlx8 mlx6 mlx4"
+MODEL_ALIASES="35b mlx8 mlx6 mlx4 gguf6 gguf5 gguf4"
 
 model_path() {
   case "$1" in
@@ -99,6 +99,10 @@ model_path() {
     mlx8) echo "${HOME}/Models/qwen3.8-27b-mlx-8bit" ;;
     mlx6) echo "${HOME}/Models/qwen3.8-27b-mlx-6bit" ;;
     mlx4) echo "${HOME}/Models/qwen3.8-27b-mlx-4bit" ;;
+    # unsloth GGUFs (inline MTP head — no separate drafter file needed)
+    gguf6) echo "${HOME}/Models/qwen3.8-27b-gguf/Qwen3.8-27B-Q6_K.gguf" ;;
+    gguf5) echo "${HOME}/Models/qwen3.8-27b-gguf/Qwen3.8-27B-UD-Q5_K_XL.gguf" ;;
+    gguf4) echo "${HOME}/Models/qwen3.8-27b-gguf/Qwen3.8-27B-UD-Q4_K_XL.gguf" ;;
     *) return 1 ;;
   esac
 }
@@ -135,7 +139,7 @@ MLX_PY="${LLM_MLX_PY:-${HOME}/Desktop/Programming/local_llm_bench/.mlxenv-0617/b
 model_family() {
   case "$1" in
     35b) echo "qwen3.6" ;;
-    mlx8|mlx6|mlx4) echo "qwen3.8" ;;
+    mlx8|mlx6|mlx4|gguf6|gguf5|gguf4) echo "qwen3.8" ;;
     *) echo "qwen" ;;
   esac
 }
@@ -144,7 +148,7 @@ model_family() {
 # value would mean serving one of them against its own recommendation.
 model_temp() {
   case "$1" in
-    mlx8|mlx6|mlx4) echo 1.0 ;;
+    mlx8|mlx6|mlx4|gguf6|gguf5|gguf4) echo 1.0 ;;
     *) echo 0.6 ;;
   esac
 }
