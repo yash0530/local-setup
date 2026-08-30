@@ -4,8 +4,10 @@
 # Serving flags come from the local_llm_bench sweep: the draft depth for each
 # model is the measured peak, not a guess.
 #
-#   llm-serve start [gguf5|gguf4|gguf6|gguf8|35b|mlx4|mlx6|mlx8|optiq4|mxfp8]
-#     default gguf5. gguf*/35b are GGUF via llama-server; mlx*/optiq4/mxfp8 are MLX.
+#   llm-serve start [gguf5|gguf4|gguf6|gguf8|35b|mlx4|optiq4|mxfp8]
+#     default gguf5. gguf*/35b are GGUF via llama-server; mlx4/optiq4/mxfp8 are MLX.
+#     (mlx6/mlx8 removed 2026-08-30 — disqualified on 64 GB: mlx6 kernel-panicked,
+#      mlx8 dead at 41K. GGUF serves 6/8-bit safely instead.)
 #     gguf5 is the recommended 27B daily driver (warm cache to ~200K, safe memory);
 #     see local_llm_bench/results/vacation-run/RECOMMENDATION.md for the full rationale
 #     and the mlx4/gguf8/35b trade-offs.
@@ -106,13 +108,11 @@ PROXY_JS="${SCRIPT_DIR}/llm-proxy.mjs"
 # --- model registry (Q8 GGUFs, MTP draft depth = benchmarked peak) ------------
 # Single list of valid aliases, used for validation, error messages, and recovering
 # which model a running server is serving.
-MODEL_ALIASES="35b mlx8 mlx6 mlx4 optiq4 mxfp8 gguf8 gguf6 gguf5 gguf4"
+MODEL_ALIASES="35b mlx4 optiq4 mxfp8 gguf8 gguf6 gguf5 gguf4"
 
 model_path() {
   case "$1" in
     35b) echo "${HOME}/Models/qwen3.6-35b-a3b-mtp-q8/Qwen3.6-35B-A3B-Q8_0.gguf" ;;
-    mlx8) echo "${HOME}/Models/qwen3.8-27b-mlx-8bit" ;;
-    mlx6) echo "${HOME}/Models/qwen3.8-27b-mlx-6bit" ;;
     mlx4) echo "${HOME}/Models/qwen3.8-27b-mlx-4bit" ;;
     # research candidates 2026-08-29: OptiQ mixed 4-bit (GDN layers kept 8-bit), mxfp8 (M5 FP8 blocks)
     optiq4) echo "${HOME}/Models/qwen3.8-27b-mlx-optiq4" ;;
@@ -132,7 +132,7 @@ model_path() {
 # the `qwen-local` model name the proxy expects.
 model_engine() {
   case "$1" in
-    mlx8|mlx6|mlx4|optiq4|mxfp8) echo "mlx" ;;
+    mlx4|optiq4|mxfp8) echo "mlx" ;;
     *) echo "llamacpp" ;;
   esac
 }
@@ -142,7 +142,7 @@ model_engine() {
 # keeps ~49% acceptance at every size while llama.cpp's inline head decays with the model.
 model_draft() {
   case "$1" in
-    mlx8|mlx6|mlx4|optiq4|mxfp8) echo "${HOME}/Models/qwen3.8-27b-mtp-mlx-8bit" ;;
+    mlx4|optiq4|mxfp8) echo "${HOME}/Models/qwen3.8-27b-mtp-mlx-8bit" ;;
     *) echo "" ;;
   esac
 }
@@ -158,7 +158,7 @@ MLX_PY="${LLM_MLX_PY:-${HOME}/Desktop/Programming/local_llm_bench/.mlxenv-0617/b
 model_family() {
   case "$1" in
     35b) echo "qwen3.6" ;;
-    mlx8|mlx6|mlx4|optiq4|mxfp8|gguf8|gguf6|gguf5|gguf4) echo "qwen3.8" ;;
+    mlx4|optiq4|mxfp8|gguf8|gguf6|gguf5|gguf4) echo "qwen3.8" ;;
     *) echo "qwen" ;;
   esac
 }
@@ -167,7 +167,7 @@ model_family() {
 # value would mean serving one of them against its own recommendation.
 model_temp() {
   case "$1" in
-    mlx8|mlx6|mlx4|optiq4|mxfp8|gguf8|gguf6|gguf5|gguf4) echo 1.0 ;;
+    mlx4|optiq4|mxfp8|gguf8|gguf6|gguf5|gguf4) echo 1.0 ;;
     *) echo 0.6 ;;
   esac
 }
@@ -181,7 +181,7 @@ draft_n() {
     35b) echo 1 ;;
     # MLX draft_block_size, not a llama.cpp draft-n: the drafter proposes block_size - 1
     # tokens, so 3 is the checkpoint's configured block and what the sweep measured.
-    mlx8|mlx6|mlx4|optiq4|mxfp8) echo 3 ;;
+    mlx4|optiq4|mxfp8) echo 3 ;;
     *) echo 2 ;;
   esac
 }
@@ -468,7 +468,7 @@ cmd_start() {
     # volume: many live snapshots × two copies each. Entries=2 plus checkpoint-only
     # stores cuts both axes. So LLM_SPEC now defaults to 1 alongside APC; set
     # LLM_SPEC=0 for cache-only.
-    # LLM_DRAFT overrides the drafter weights dir (e.g. ~/Models/qwen3.8-27b-dspark);
+    # LLM_DRAFT overrides the drafter weights dir (an alternate MTP drafter checkpoint);
     # LLM_DRAFT_KIND picks the family ('mtp' default; 'auto' omits the flag so the
     # server detects it from the drafter's model_type — needed for DSpark/DFlash2,
     # whose kinds aren't in 0.6.17's --draft-kind enum).
