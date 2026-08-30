@@ -4,8 +4,11 @@
 # Serving flags come from the local_llm_bench sweep: the draft depth for each
 # model is the measured peak, not a guess.
 #
-#   llm-serve start [35b|mlx8|mlx6|mlx4]  start (or switch to) a model + proxy
-#     35b is GGUF via llama-server; mlx8/mlx6/mlx4 are MLX via mlx_vlm.server
+#   llm-serve start [gguf5|gguf4|gguf6|gguf8|35b|mlx4|mlx6|mlx8|optiq4|mxfp8]
+#     default gguf5. gguf*/35b are GGUF via llama-server; mlx*/optiq4/mxfp8 are MLX.
+#     gguf5 is the recommended 27B daily driver (warm cache to ~200K, safe memory);
+#     see local_llm_bench/results/vacation-run/RECOMMENDATION.md for the full rationale
+#     and the mlx4/gguf8/35b trade-offs.
 #   llm-serve stop              stop everything
 #   llm-serve status            what's running, and whether it answers
 #   llm-serve restart [model]   stop then start (defaults to the resident model)
@@ -350,7 +353,7 @@ start_proxy() { # [model_name_for_upstream]
 
 cmd_start() {
   reconcile
-  local model="${1:-35b}"
+  local model="${1:-gguf5}"
   local path
   if ! path="$(model_path "$model")"; then
     echo "unknown model '$model' (expected one of: ${MODEL_ALIASES})" >&2
@@ -656,7 +659,7 @@ cmd_status() {
 }
 
 case "${1:-status}" in
-  start)   shift; cmd_start "${1:-35b}" ;;
+  start)   shift; cmd_start "${1:-gguf5}" ;;
   stop)    cmd_stop ;;
   # Read $CURRENT BEFORE cmd_stop, which deletes it. Defaulting to 35b here meant a bare
   # `LLM_APC=0 llm-serve restart` silently swapped a resident MLX model for the 37 GB GGUF
