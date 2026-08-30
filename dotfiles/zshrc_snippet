@@ -10,7 +10,7 @@ alias agy="agy --dangerously-skip-permissions"
 # needs a function. `command claude` bypasses this function, so it does not recurse.
 #   claude                                    Pro subscription (default)
 #   claude open_router [ox_alpha|<model>]     OpenRouter (defaults to stealth/ox-alpha)
-#   claude local qwen38_27 [--bits 4|5|6|8]  Qwen 3.8 27B on GGUF (default 5)
+#   claude local qwen38_27 [--bits 4|5|6|8] [--think low|medium|xhigh]  Qwen 3.8 27B GGUF (default bits 5, think medium)
 #   claude local qwen36_35                   Qwen 3.6 35B A3B (fast MoE)
 #   claude local                              whatever model is already resident
 #   claude subagent                           Pro + the opt-in local delegation subagent
@@ -44,11 +44,19 @@ claude() {
           # usable (8-bit included, where MLX OOM'd/panicked). --bits picks the quant;
           # 5 (Q5_K_XL) is the default — the best balance of depth, memory headroom and
           # quality. 4 = fastest/most headroom, 6/8 = more quality (8 sits at the mem
-          # edge). See local_llm_bench/results/vacation-run/RECOMMENDATION.md.
+          # edge). --think sets reasoning effort (Qwen 3.8: low|medium|xhigh, default
+          # medium); it reloads the proxy so it also re-applies to an already-running
+          # stack. See local_llm_bench/results/vacation-run/RECOMMENDATION.md.
           # For the snappy MLX path (2-4s trivial turns, <~50K ctx): qwen-code --model mlx4
           shift
-          local _bits=5
-          if [[ "${1:-}" == "--bits" ]]; then _bits="${2:-5}"; shift 2; fi
+          local _bits=5 _think=""
+          while true; do
+            case "${1:-}" in
+              --bits)  _bits="${2:-5}"; shift 2 ;;
+              --think) _think="${2:-}"; shift 2 ;;
+              *) break ;;
+            esac
+          done
           local _m
           case "$_bits" in
             8) _m=gguf8 ;;
@@ -57,6 +65,17 @@ claude() {
             4) _m=gguf4 ;;
             *) echo "claude local qwen38_27: --bits must be 4, 5, 6 or 8" >&2; return 1 ;;
           esac
+          if [[ -n "$_think" ]]; then
+            case "$_think" in
+              low|medium|xhigh) ;;
+              *) echo "claude local qwen38_27: --think must be low, medium or xhigh" >&2; return 1 ;;
+            esac
+            # bring up the right model, then reload the proxy with the chosen effort
+            # (start_proxy no-ops if the proxy is already up, so restart-proxy is what
+            # actually applies a change on a running stack).
+            LLM_EFFORT="$_think" llm-serve start "$_m" >/dev/null 2>&1
+            LLM_EFFORT="$_think" llm-serve restart-proxy >/dev/null 2>&1
+          fi
           qwen-code --model "$_m" "$@"
           ;;
         qwen36_35) shift; qwen-code --model 35b "$@" ;;
