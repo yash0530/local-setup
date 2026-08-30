@@ -10,3 +10,4 @@ cache/
 
 # Benchmark output from scripts/llm-bench-turns — machine-specific timings.
 bench-results/
+stress-corpus/
