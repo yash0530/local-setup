@@ -22,7 +22,7 @@ LOG_DIR="${STATE_DIR}/logs"
 # costs ~11 min on a cache miss. --slot-save-path only enables the
 # /slots/{id}?action=save|restore endpoints; llama.cpp does not persist or
 # reload slots on its own, so nothing uses this until something calls them.
-# --cache-reuse is the one that helps automatically.
+# NOTE: --cache-reuse is a no-op on the hybrid Qwen3.8 arch (removed); see LLAMA_CACHE_RAM_MIB.
 KV_DIR="${STATE_DIR}/kv"
 mkdir -p "$LOG_DIR" "$KV_DIR"
 
@@ -41,6 +41,18 @@ CTX="${LLM_CTX:-262144}"
 # reasoning phase from looking like a dead connection, so no cap is needed here.
 # Set LLM_THINK_BUDGET to a token count if you ever want to bound latency.
 THINK_BUDGET="${LLM_THINK_BUDGET:--1}"
+
+# llama.cpp prompt-cache budget (host RAM, MiB) for saved slot states. A saved state
+# for the Qwen 3.8 hybrid costs ~103 KB/token (attention KV + GatedDeltaNet conv/SSM
+# state across all 65 blocks), so the llama.cpp default of 8192 MiB silently caps warm
+# restore at ~79k tokens — past that the server logs "prompt state size ... exceeds
+# cache size limit ... skipping" and cold-reprefills the whole conversation (measured:
+# gguf4 lost warmth at B3/110k, 886 s re-prefill). 24576 MiB holds a single ~240k state
+# or three ~79k states, and it is HOST RAM, not GPU-wired, so it does not push toward the
+# iogpu limit. --cache-reuse was REMOVED: it is a no-op on this hybrid/recurrent arch
+# ("cache_reuse is not supported by this context" at startup); all warmth comes from
+# llama.cpp b10621+'s hybrid context checkpoints (verified 2026-08-29, STRESS-GGUF.md).
+LLAMA_CACHE_RAM_MIB="${LLM_CACHE_RAM_MIB:-24576}"
 
 # Qwen 3.8 defaults to "xhigh" reasoning effort, which is why a trivial turn can spend a
 # minute thinking before the first visible token. LLM_EFFORT=low|medium|xhigh is passed
@@ -590,7 +602,7 @@ cmd_start() {
     ${spec[@]+"${spec[@]}"} \
     -c "$CTX" -ngl 99 -fa on -np 1 \
     ${mlock[@]+"${mlock[@]}"} \
-    --cache-reuse 256 \
+    --cache-ram "$LLAMA_CACHE_RAM_MIB" \
     --slot-save-path "$KV_DIR" \
     --jinja --reasoning-format deepseek \
     --reasoning-budget "$THINK_BUDGET" \
