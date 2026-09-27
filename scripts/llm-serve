@@ -422,6 +422,6 @@ case "${1:-status}" in
         tail -f "$SERVER_LOG" ;;
     esac ;;
   *)
-    grep '^#' "$0" | sed -n '2,12p' | sed 's/^# \?//'
+    grep '^#' "$0" | sed -n '2,12p' | sed -E 's/^# ?//'
     exit 1 ;;
 esac
