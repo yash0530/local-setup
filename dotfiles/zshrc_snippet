@@ -10,7 +10,9 @@ alias agy="agy --dangerously-skip-permissions"
 # needs a function. `command claude` bypasses this function, so it does not recurse.
 #   claude                                    Pro subscription (default)
 #   claude open_router [ox_alpha|<model>]     OpenRouter (defaults to stealth/ox-alpha)
-#   claude local qwen38_27 [--bits 4|5|6|8] [--think low|medium|xhigh]  Qwen 3.8 27B GGUF (default bits 5, think medium)
+#   claude local qwen38_27 [--bits 4|5|6|8] [--engine splash|gguf] [--think low|medium|xhigh]
+#                                             Qwen 3.8 27B (default bits 5, think xhigh;
+#                                             --bits 4 runs on LM Studio's Splash engine)
 #   claude local qwen36_35                   Qwen 3.6 35B A3B (fast MoE)
 #   claude local                              whatever model is already resident
 #   claude subagent                           Pro + the opt-in local delegation subagent
@@ -45,24 +47,48 @@ claude() {
           # 5 (Q5_K_XL) is the default — the best balance of depth, memory headroom and
           # quality. 4 = fastest/most headroom, 6/8 = more quality (8 sits at the mem
           # edge). --think sets reasoning effort (Qwen 3.8: low|medium|xhigh, default
-          # medium); it reloads the proxy so it also re-applies to an already-running
-          # stack. See local_llm_bench/results/vacation-run/RECOMMENDATION.md.
+          # xhigh since 2026-09-27); it reloads the proxy so it also re-applies to an
+          # already-running stack. See local_llm_bench/results/vacation-run/RECOMMENDATION.md.
+          # --bits 4 runs incoai/Qwen3.8-27B-Splash (4-bit + DFlash2) on LM Studio's Splash
+          # engine; --engine gguf keeps the old llama.cpp gguf4. Splash is 4-bit only.
+          # If LM Studio isn't installed, --bits 4 falls back to gguf4 with a note.
           # For the snappy MLX path (2-4s trivial turns, <~50K ctx): qwen-code --model mlx4
           shift
-          local _bits=5 _think=""
+          local _bits=5 _think="" _engine=""
           while true; do
             case "${1:-}" in
-              --bits)  _bits="${2:-5}"; shift 2 ;;
-              --think) _think="${2:-}"; shift 2 ;;
+              --bits)   _bits="${2:-5}"; shift 2 ;;
+              --think)  _think="${2:-}"; shift 2 ;;
+              --engine) _engine="${2:-}"; shift 2 ;;
               *) break ;;
             esac
           done
+          case "$_engine" in
+            ""|splash|gguf) ;;
+            *) echo "claude local qwen38_27: --engine must be splash or gguf" >&2; return 1 ;;
+          esac
+          if [[ "$_engine" == "splash" && "$_bits" != 4 ]]; then
+            echo "claude local qwen38_27: Splash is 4-bit only — use --bits 4 (or drop --engine)" >&2
+            return 1
+          fi
           local _m
           case "$_bits" in
             8) _m=gguf8 ;;
             6) _m=gguf6 ;;
             5) _m=gguf5 ;;
-            4) _m=gguf4 ;;
+            4)
+              _m=splash4
+              if [[ "$_engine" == "gguf" ]]; then
+                _m=gguf4
+              elif ! command -v lms >/dev/null 2>&1 && [[ ! -x "$HOME/.lmstudio/bin/lms" ]]; then
+                if [[ "$_engine" == "splash" ]]; then
+                  echo "claude local qwen38_27: --engine splash needs LM Studio (lms) installed" >&2
+                  return 1
+                fi
+                echo "note: LM Studio (lms) not installed — falling back to gguf4 on llama.cpp" >&2
+                _m=gguf4
+              fi
+              ;;
             *) echo "claude local qwen38_27: --bits must be 4, 5, 6 or 8" >&2; return 1 ;;
           esac
           if [[ -n "$_think" ]]; then
@@ -87,7 +113,7 @@ claude() {
         -*|"")     qwen-code "$@" ;;
         *)
           echo "claude local: unknown model '$1'" >&2
-          echo "  expected: qwen38_27 [--bits 4|5|6|8] | qwen36_35" >&2
+          echo "  expected: qwen38_27 [--bits 4|5|6|8] [--engine splash|gguf] | qwen36_35" >&2
           echo "  (if this name looks right, run: source ~/.zshrc)" >&2
           return 1
           ;;
@@ -119,11 +145,17 @@ alias llm_use_27="llm-serve start mlx8"      # Qwen 3.8 27B, MLX 8-bit
 alias llm_use_27_6b="llm-serve start mlx6"   # ~24% faster/turn, 7 GB smaller
 alias llm_use_27_4b="llm-serve start mlx4"   # fastest; quality unmeasured
 alias llm_use_35="llm-serve start 35b"
+alias llm_use_splash="llm-serve start splash4"   # Qwen 3.8 27B 4-bit on LM Studio Splash
 
 # Claude Code running entirely on a local model (pinned per alias)
 alias claude_local_qwen_3.8_27="qwen-code --model mlx8"
 alias claude_local_qwen_3.6_35="qwen-code --model 35b"
 alias claude_local="qwen-code"             # whatever model is already resident
+alias claude_local_splash="qwen-code --model splash4"
+
+# Interactive terminal chat with the Splash model via LM Studio's own CLI. The UI
+# equivalent is the LM Studio app's Chat tab (pick Qwen3.8-27B-Splash).
+alias qwen_splash_chat="qwen-cli splash4"
 
 # Claude Code via OpenRouter (defaults to stealth/ox-alpha)
 alias claude_openrouter="openrouter-code"
