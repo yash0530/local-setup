@@ -217,9 +217,22 @@ DFlash2 drafter (1.2 GiB, 7 tokens per step); about 17.4 GB in total. It claims
 74 t/s short and 54 t/s at 32K on an M5 Pro. Alias `splash4`: `llm-serve` starts it
 with `lms server start --port 8089` + `lms load … --identifier qwen-local`, so the
 proxy and `qwen` talk to it unchanged. `claude local qwen38_27 --bits 4` picks it;
-`--engine gguf` keeps llama.cpp `gguf4`. **Watch prompt-cache warmth first**:
-DFlash2 silently bypassed APC on mlx_vlm (above), so check that Splash follow-ups
-don't re-prefill (`lms log stream`) before trusting the decode numbers.
+`--engine gguf` keeps llama.cpp `gguf4`.
+
+Measured 2026-09-27 (LM Studio 0.4.25, Splash runtime 0.0.5) through a real 3-turn
+Claude Code session (Read → Edit → Bash, then two follow-ups):
+
+- Warm follow-ups **2 s and 1 s** wall. The LM Studio log (`~/.lmstudio/server-logs/`,
+  `Done · input N · cached M` lines) shows 97–99% of every prompt cached after the
+  first request, TTFT 0.4–0.9 s. Unlike DFlash2 on mlx_vlm, the cache holds.
+- Decode 50–84 t/s (about 3× gguf5). Cold 16k-token prefill: 33 s (~480 tok/s).
+- Loads 262144 ctx in ~15 s; wired memory stays low (~4.5 GB) because the weights
+  are mapped from disk. Depth ceiling is still untested (run the depth ladder).
+- **Effort caveat:** LM Studio does not forward `reasoning_effort` (neither top-level
+  nor `chat_template_kwargs`) to the template, so Splash always runs the template
+  default, which is `xhigh`. `--think low|medium` has no effect on `splash4`.
+- The LM Studio model key is `qwen3.8-27b-splash`, and the download needs the full HF
+  URL: `lms get https://huggingface.co/incoai/Qwen3.8-27B-Splash`.
 
 **Reasoning effort now defaults to `xhigh`** (was `medium`) for every model via
 `LLM_EFFORT` in `llm-serve`. `--think medium` / `LLM_EFFORT=medium` trims it per

@@ -120,8 +120,9 @@ model_path() {
     gguf5) echo "${HOME}/Models/qwen3.8-27b-gguf/Qwen3.8-27B-UD-Q5_K_XL.gguf" ;;
     gguf4) echo "${HOME}/Models/qwen3.8-27b-gguf/Qwen3.8-27B-UD-Q4_K_XL.gguf" ;;
     # Not a file: Splash weights are fixed-layout binaries only LM Studio's Splash
-    # runtime can map, so this is the LM Studio model key `lms load` takes.
-    splash4) echo "incoai/Qwen3.8-27B-Splash" ;;
+    # runtime can map, so this is the LM Studio model key `lms load` takes (as `lms ls`
+    # prints it — the HF repo name incoai/Qwen3.8-27B-Splash does not resolve).
+    splash4) echo "qwen3.8-27b-splash" ;;
     *) return 1 ;;
   esac
 }
@@ -409,7 +410,7 @@ cmd_start() {
     fi
     if ! "$LMS" ls 2>/dev/null | grep -qiF "$(basename "$path")"; then
       echo "model not downloaded: $path" >&2
-      echo "download it first:  lms get $path" >&2
+      echo "download it first:  lms get https://huggingface.co/incoai/Qwen3.8-27B-Splash" >&2
       exit 1
     fi
   # GGUF models are a single file; MLX models are a directory of shards.

@@ -242,7 +242,7 @@ One-time install:
 ```bash
 brew install --cask lm-studio && ~/.lmstudio/bin/lms bootstrap
 # LM Studio → Settings → Runtime → Experimental → "Splash (Metal)" → Download
-lms get incoai/Qwen3.8-27B-Splash
+lms get https://huggingface.co/incoai/Qwen3.8-27B-Splash   # full URL: the bare name hits LM Studio Hub
 ```
 
 Ways to use it:
@@ -258,9 +258,13 @@ Ways to use it:
 
 If LM Studio isn't installed, `--bits 4` falls back to `gguf4` with a note.
 
+Measured here (M5 Pro 64 GB): warm follow-ups in 1–2 s, 97–99% prompt-cache hits,
+50–84 t/s decode, versus ~13–26 t/s on GGUF/MLX. Splash always reasons at `xhigh`:
+LM Studio doesn't pass `--think low|medium` through to the model.
+
 **Thinking defaults to `xhigh`** for every local model (`LLM_EFFORT`, the
 `--think` flag, `qwen --think`, `qwen-cli`). Pass `--think medium` to trade depth
-for latency.
+for latency (not on Splash, see above).
 
 ### 5.1 Serving Parameters & Launch Commands
 
