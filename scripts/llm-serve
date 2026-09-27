@@ -49,7 +49,14 @@ normalize_effort() { # effort -> low|medium|xhigh, or fail
 }
 LLM_EFFORT="$(normalize_effort "${LLM_EFFORT:-xhigh}")" || exit 1
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Resolve the real script location: it is run via a symlink in ~/.local/bin, and repo
+# files (dotfiles/lmstudio) are found relative to the repo, not the symlink.
+_self="${BASH_SOURCE[0]}"
+while [[ -L "$_self" ]]; do
+  _link="$(readlink "$_self")"
+  [[ "$_link" == /* ]] && _self="$_link" || _self="$(dirname "$_self")/$_link"
+done
+SCRIPT_DIR="$(cd "$(dirname "$_self")" && pwd)"
 PROXY_JS="${SCRIPT_DIR}/llm-proxy.mjs"
 
 # --- model registry ------------------------------------------------------------
@@ -81,7 +88,7 @@ SPLASH_CTX="${LLM_SPLASH_CTX:-$CTX}"
 # The downloaded weights the virtual model wraps, as `lms ls` names them.
 SPLASH_BASE_NAME="Qwen3.8-27B-Splash"
 # A hub model is a manifest.json (base-weights dependency) plus model.yaml (the override).
-SPLASH_VIRTUAL_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/dotfiles/lmstudio/qwen3.8-27b-splash"
+SPLASH_VIRTUAL_SRC="$(cd "$SCRIPT_DIR/.." && pwd)/dotfiles/lmstudio/qwen3.8-27b-splash"
 SPLASH_VIRTUAL_DST="${HOME}/.lmstudio/hub/models/local/qwen3.8-27b-splash"
 
 # Keep LM Studio's copy of the virtual model in step with the repo (picked up on next load).
