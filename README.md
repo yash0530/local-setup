@@ -125,6 +125,7 @@ Claude Code on local weights goes through the §3.1 dispatcher:
 
 ```bash
 claude local qwen38_27   # Qwen 3.8 27B (dense, higher quality)
+claude local qwen38_27 --bits 4   # same model, 4-bit on LM Studio's Splash engine
 claude local qwen36_35   # Qwen 3.6 35B A3B (MoE, ~4x faster)
 claude local             # whichever model is resident
 claude subagent          # Pro plan + the local-qwen delegation subagent
@@ -228,6 +229,38 @@ Silicon. With one user at the keyboard, keep MTP and let requests queue.
 > *server-side* tools, so the proxy executes them itself rather than letting the
 > model call into a void. Keyless by default; see
 > [LOCAL_LLM_HARNESS.md §7](LOCAL_LLM_HARNESS.md).
+
+### 5.0 Splash engine (LM Studio): `--bits 4`
+
+[Splash](https://lmstudio.ai/blog/splash-engine) is Inco AI's Apple-Silicon engine
+inside LM Studio, tuned for `incoai/Qwen3.8-27B-Splash`. That model is **4-bit only**
+(14.1 GiB target in Splash's own format, plus a bundled DFlash2 drafter), so it
+can't reuse the GGUF/MLX files. It needs an M3 or newer, macOS 26.4+ and 36 GB+.
+
+One-time install:
+
+```bash
+brew install --cask lm-studio && ~/.lmstudio/bin/lms bootstrap
+# LM Studio → Settings → Runtime → Experimental → "Splash (Metal)" → Download
+lms get incoai/Qwen3.8-27B-Splash
+```
+
+Ways to use it:
+
+| | |
+|---|---|
+| Claude Code | `claude local qwen38_27 --bits 4` (or `claude_local_splash`) |
+| llama.cpp 4-bit instead | `claude local qwen38_27 --bits 4 --engine gguf` |
+| Serve only | `llm-serve start splash4` (`llm_use_splash`) |
+| One-shot CLI | `qwen "..."`, `qwen --think "..."` (effort xhigh) |
+| Interactive terminal chat | `qwen-cli splash4` (`qwen_splash_chat`, wraps `lms chat`) |
+| UI | the LM Studio app → Chat, with Qwen3.8-27B-Splash loaded |
+
+If LM Studio isn't installed, `--bits 4` falls back to `gguf4` with a note.
+
+**Thinking defaults to `xhigh`** for every local model (`LLM_EFFORT`, the
+`--think` flag, `qwen --think`, `qwen-cli`). Pass `--think medium` to trade depth
+for latency.
 
 ### 5.1 Serving Parameters & Launch Commands
 

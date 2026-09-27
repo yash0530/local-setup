@@ -210,6 +210,21 @@ drafter through real Claude Code sessions. Verdicts, all measured:
   37–82 s, warm prefill 0.9–9 s at 20–28k tokens, decode ~21–22 tok/s, zero panics
   and zero Metal OOMs across the verification session.
 
+**Update 2026-09-27: `--bits 4` now means LM Studio Splash.** Inco AI's Splash engine
+(LM Studio, Metal, experimental) is tuned for exactly `incoai/Qwen3.8-27B-Splash`.
+That is a 4-bit target in its own fixed-layout format (14.1 GiB) plus a bundled
+DFlash2 drafter (1.2 GiB, 7 tokens per step); about 17.4 GB in total. It claims
+74 t/s short and 54 t/s at 32K on an M5 Pro. Alias `splash4`: `llm-serve` starts it
+with `lms server start --port 8089` + `lms load … --identifier qwen-local`, so the
+proxy and `qwen` talk to it unchanged. `claude local qwen38_27 --bits 4` picks it;
+`--engine gguf` keeps llama.cpp `gguf4`. **Watch prompt-cache warmth first**:
+DFlash2 silently bypassed APC on mlx_vlm (above), so check that Splash follow-ups
+don't re-prefill (`lms log stream`) before trusting the decode numbers.
+
+**Reasoning effort now defaults to `xhigh`** (was `medium`) for every model via
+`LLM_EFFORT` in `llm-serve`. `--think medium` / `LLM_EFFORT=medium` trims it per
+session.
+
 ---
 
 ## 4. The serving config — and why it differs from the benchmark's
