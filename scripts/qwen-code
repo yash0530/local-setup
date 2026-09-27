@@ -8,7 +8,9 @@
 #
 #   qwen-code                      interactive session on the local model
 #   qwen-code -p "fix the lint"    headless one-shot
-#   qwen-code --model 27b -p "..." switch model first, then run
+#   qwen-code --model gguf5 -p "..." switch model first, then run
+#   qwen-code --think low -p "..."    reasoning effort: xhigh (default) | medium | low
+#                                     (also high/max -> xhigh, med -> medium, minimal -> low)
 #
 # Every other argument is passed through to `claude` untouched.
 
@@ -17,18 +19,43 @@ set -euo pipefail
 PROXY_PORT="${PROXY_PORT:-8790}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Optional leading --model switches which GGUF is loaded before we start.
+# Optional leading --model / --think, in either order. --model switches which model is
+# loaded before we start; --think sets the reasoning effort (default xhigh, or
+# $LLM_EFFORT).
 WANT_MODEL=""
-if [[ "${1:-}" == "--model" ]]; then
-  WANT_MODEL="${2:-}"
-  shift 2
-fi
+WANT_EFFORT="${LLM_EFFORT:-xhigh}"
+while true; do
+  case "${1:-}" in
+    --model) WANT_MODEL="${2:-}"; shift 2 ;;
+    --think) WANT_EFFORT="${2:-}"; shift 2 ;;
+    *) break ;;
+  esac
+done
+# Map onto the model's three real levels (the template rejects anything else).
+case "$(echo "$WANT_EFFORT" | tr 'A-Z' 'a-z')" in
+  xhigh|high|max|x-high|extra-high) WANT_EFFORT=xhigh ;;
+  medium|med|default)                WANT_EFFORT=medium ;;
+  low|minimal|min)                   WANT_EFFORT=low ;;
+  *) echo "qwen-code: --think must be xhigh, medium or low (got '$WANT_EFFORT')" >&2; exit 2 ;;
+esac
+export LLM_EFFORT="$WANT_EFFORT"
 
 if [[ -n "$WANT_MODEL" ]]; then
   "${SCRIPT_DIR}/llm-serve" start "$WANT_MODEL"
 elif ! curl -sf "http://127.0.0.1:${PROXY_PORT}/health" >/dev/null 2>&1; then
   echo "local stack not running — starting it" >&2
   "${SCRIPT_DIR}/llm-serve" start
+fi
+
+# The effort lives in the proxy (it stamps reasoning_effort on every request), so a
+# proxy started earlier at another level would silently keep it. Restart just the
+# proxy when it differs — the model stays resident, so this costs about a second.
+# Note it applies to every session sharing this stack, not only this one.
+CUR_EFFORT="$(curl -sf --max-time 5 "http://127.0.0.1:${PROXY_PORT}/health" 2>/dev/null \
+  | sed -n 's/.*"effort":"\([a-z]*\)".*/\1/p')"
+if [[ "$CUR_EFFORT" != "$WANT_EFFORT" ]]; then
+  echo "reasoning effort -> ${WANT_EFFORT} (was ${CUR_EFFORT:-unset}); restarting proxy" >&2
+  "${SCRIPT_DIR}/llm-serve" restart-proxy >/dev/null
 fi
 
 # ANTHROPIC_API_KEY would take precedence over ANTHROPIC_AUTH_TOKEN and send

@@ -1,0 +1,50 @@
+# LM Studio virtual model: Qwen3.8-27B-Splash with its reasoning effort exposed.
+#
+# The HF download (incoai/Qwen3.8-27B-Splash) declares no reasoning capability, so LM
+# Studio silently drops a request's `reasoning_effort` and the chat template always
+# falls back to its own default (xhigh). Declaring the template's `reasoning_effort`
+# variable as a custom field makes LM Studio map the OpenAI-style request field onto
+# it, so `claude local qwen38_27 --bits 4 --think low` actually reaches the model.
+# The weights and the SHA-checked template are untouched; this only wraps them.
+#
+# Installed by llm-serve to ~/.lmstudio/hub/models/local/qwen3.8-27b-splash/model.yaml
+# and loaded as `local/qwen3.8-27b-splash`.
+model: local/qwen3.8-27b-splash
+base:
+  - key: incoai/qwen3.8-27b-splash
+    sources:
+      - type: huggingface
+        user: incoai
+        repo: Qwen3.8-27B-Splash
+metadataOverrides:
+  domain: llm
+  architectures:
+    - qwen3_5
+  compatibilityTypes:
+    - yuzu
+  paramsStrings:
+    - 27B
+  contextLengths:
+    - 262144
+  vision: true
+  reasoning: true
+  trainedForToolUse: true
+customFields:
+  # Values are exactly the template's own levels (chat_template.jinja: xhigh | medium |
+  # low). xhigh prepends a "think carefully" instruction, low a "keep it brief" one,
+  # medium adds none.
+  - key: reasoningEffort
+    displayName: Reasoning Effort
+    description: How much the model thinks before answering (the template's reasoning_effort).
+    type: select
+    defaultValue: xhigh
+    options:
+      - value: low
+        label: Low
+      - value: medium
+        label: Medium
+      - value: xhigh
+        label: Extra High
+    effects:
+      - type: setJinjaVariable
+        variable: reasoning_effort

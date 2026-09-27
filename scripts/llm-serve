@@ -66,7 +66,20 @@ LLAMA_CACHE_RAM_MIB="${LLM_CACHE_RAM_MIB:-24576}"
 # ~900-2000 reasoning tokens even for "what is up", which at ~14 tok/s is most of a
 # minute before the first visible token. `claude local ... --think medium` (or
 # LLM_EFFORT=medium) trims it back per session.
-LLM_EFFORT="${LLM_EFFORT:-xhigh}"
+#
+# Qwen 3.8's chat template has exactly three levels, and each maps to what the template
+# actually does: xhigh prepends a "think carefully, validate assumptions" instruction,
+# low prepends "keep your thinking brief", medium prepends nothing. Anything else is a
+# template error, so common spellings are normalised onto those three here.
+normalize_effort() { # effort -> low|medium|xhigh, or fail
+  case "$(echo "${1:-}" | tr 'A-Z' 'a-z')" in
+    xhigh|high|max|x-high|extra-high) echo xhigh ;;
+    medium|med|default)                echo medium ;;
+    low|minimal|min)                   echo low ;;
+    *) echo "invalid reasoning effort '${1:-}' (expected low, medium or xhigh)" >&2; return 1 ;;
+  esac
+}
+LLM_EFFORT="$(normalize_effort "${LLM_EFFORT:-xhigh}")" || exit 1
 
 # --- APC disk tier (MLX only) -------------------------------------------------
 # The in-RAM exact cache is bounded by ENTRY COUNT, not by bytes, and there is no
@@ -119,9 +132,11 @@ model_path() {
     gguf5) echo "${HOME}/Models/qwen3.8-27b-gguf/Qwen3.8-27B-UD-Q5_K_XL.gguf" ;;
     gguf4) echo "${HOME}/Models/qwen3.8-27b-gguf/Qwen3.8-27B-UD-Q4_K_XL.gguf" ;;
     # Not a file: Splash weights are fixed-layout binaries only LM Studio's Splash
-    # runtime can map, so this is the LM Studio model key `lms load` takes (as `lms ls`
-    # prints it — the HF repo name incoai/Qwen3.8-27B-Splash does not resolve).
-    splash4) echo "qwen3.8-27b-splash" ;;
+    # runtime can map, so this is an LM Studio model key. It is the virtual model from
+    # dotfiles/lmstudio/ (installed by ensure_splash_virtual_model), which wraps the
+    # downloaded weights and exposes the template's reasoning_effort — the bare download
+    # (key qwen3.8-27b-splash) makes LM Studio drop the field, pinning effort at xhigh.
+    splash4) echo "local/qwen3.8-27b-splash" ;;
     *) return 1 ;;
   esac
 }
@@ -158,6 +173,21 @@ MLX_PY="${LLM_MLX_PY:-${HOME}/Desktop/Programming/local_llm_bench/.mlxenv-0617/b
 # install only has it under ~/.lmstudio/bin, so fall back to that.
 LMS="${LLM_LMS:-$(command -v lms 2>/dev/null || echo "${HOME}/.lmstudio/bin/lms")}"
 SPLASH_CTX="${LLM_SPLASH_CTX:-$CTX}"
+# The downloaded weights the virtual model wraps, as `lms ls` names them.
+SPLASH_BASE_NAME="Qwen3.8-27B-Splash"
+SPLASH_VIRTUAL_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/dotfiles/lmstudio/qwen3.8-27b-splash/model.yaml"
+SPLASH_VIRTUAL_DST="${HOME}/.lmstudio/hub/models/local/qwen3.8-27b-splash/model.yaml"
+
+# Keep LM Studio's copy of the virtual model in step with the repo. LM Studio indexes
+# ~/.lmstudio/hub/models on its own; a changed file is picked up on the next load.
+ensure_splash_virtual_model() {
+  [[ -f "$SPLASH_VIRTUAL_SRC" ]] || { echo "missing $SPLASH_VIRTUAL_SRC" >&2; return 1; }
+  if ! cmp -s "$SPLASH_VIRTUAL_SRC" "$SPLASH_VIRTUAL_DST"; then
+    mkdir -p "$(dirname "$SPLASH_VIRTUAL_DST")"
+    cp "$SPLASH_VIRTUAL_SRC" "$SPLASH_VIRTUAL_DST"
+    echo "  installed LM Studio virtual model local/qwen3.8-27b-splash"
+  fi
+}
 
 # Display name for a model alias.
 model_family() {
@@ -403,8 +433,8 @@ cmd_start() {
       echo "install LM Studio, run ~/.lmstudio/bin/lms bootstrap, then enable Settings > Runtime > Splash (Metal)" >&2
       exit 1
     fi
-    if ! "$LMS" ls 2>/dev/null | grep -qiF "$(basename "$path")"; then
-      echo "model not downloaded: $path" >&2
+    if ! "$LMS" ls 2>/dev/null | grep -qiF "$SPLASH_BASE_NAME"; then
+      echo "model not downloaded: incoai/$SPLASH_BASE_NAME" >&2
       echo "download it first:  lms get https://huggingface.co/incoai/Qwen3.8-27B-Splash" >&2
       exit 1
     fi
@@ -446,6 +476,7 @@ cmd_start() {
     # so there is no draft flag, APC knob or mlock here — LM Studio owns all of that.
     # Sampling is per-request: the proxy forwards Claude Code's temperature, and
     # reasoning_effort rides along on every request exactly as for the other engines.
+    ensure_splash_virtual_model || exit 1
     echo "starting $(model_family "$model")-${model} (LM Studio Splash, ctx ${SPLASH_CTX})"
     "$LMS" server start --port "$LLAMA_PORT" >"$SERVER_LOG" 2>&1 || {
       echo "  lms server start failed:" >&2; tail -20 "$SERVER_LOG" >&2; exit 1; }
@@ -715,7 +746,10 @@ cmd_status() {
   fi
 
   if is_running "$PROXY_PID"; then
-    echo "proxy         running   port=${PROXY_PORT}"
+    local eff
+    eff="$(curl -sf --max-time 5 "http://127.0.0.1:${PROXY_PORT}/health" 2>/dev/null \
+      | sed -n 's/.*"effort":"\([a-z]*\)".*/\1/p')"
+    echo "proxy         running   port=${PROXY_PORT}  think=${eff:-?}"
   else
     echo "proxy         stopped"
   fi

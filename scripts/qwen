@@ -17,8 +17,8 @@
  *   -s, --system TEXT   system prompt
  *   -t, --think         enable extended reasoning (default off — it costs
  *                       roughly 10-20x the tokens, so only for hard analysis)
- *   -e, --effort LEVEL  reasoning effort when thinking: low|medium|xhigh
- *                       (default xhigh, or $LLM_EFFORT)
+ *   -e, --effort LEVEL  reasoning effort when thinking: xhigh|medium|low
+ *                       (default xhigh, or $LLM_EFFORT; high/max = xhigh)
  *   -m, --max-tokens N  cap generated tokens (default 4096)
  *       --temp N        sampling temperature (default 1.0, Qwen 3.8's recommendation)
  *       --raw           print without the trailing newline fixups
@@ -70,8 +70,11 @@ async function readStdin() {
   return Buffer.concat(chunks).toString("utf8");
 }
 
-if (!["low", "medium", "xhigh"].includes(opts.effort)) {
-  console.error(`qwen: --effort must be low, medium or xhigh (got ${opts.effort})`);
+// Map onto Qwen 3.8's three template levels; common spellings are accepted.
+const EFFORT_ALIASES = { xhigh: "xhigh", high: "xhigh", max: "xhigh", medium: "medium", med: "medium", low: "low", minimal: "low" };
+opts.effort = EFFORT_ALIASES[String(opts.effort).toLowerCase()];
+if (!opts.effort) {
+  console.error("qwen: --effort must be xhigh, medium or low");
   process.exit(2);
 }
 

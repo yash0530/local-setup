@@ -1100,7 +1100,9 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
   const path = url.pathname;
 
-  if (path === "/health") return sendJSON(res, 200, { ok: true, upstream: UPSTREAM, model: MODEL });
+  // `effort` lets qwen-code tell whether a running proxy already applies the requested
+  // --think level, and restart only the proxy (never the model) when it doesn't.
+  if (path === "/health") return sendJSON(res, 200, { ok: true, upstream: UPSTREAM, model: MODEL, effort: REASONING_EFFORT });
 
   // Claude Code pre-flights context budget here; an approximation is fine, it
   // only drives compaction timing.
