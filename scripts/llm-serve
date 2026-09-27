@@ -4,8 +4,9 @@
 # Serving flags come from the local_llm_bench sweep: the draft depth for each
 # model is the measured peak, not a guess.
 #
-#   llm-serve start [gguf5|gguf4|gguf6|gguf8|35b|mlx4]
-#     default gguf5. gguf*/35b are GGUF via llama-server; mlx4 is MLX (snappy shallow).
+#   llm-serve start [gguf5|gguf4|gguf6|gguf8|35b|mlx4|splash4]
+#     default gguf5. gguf*/35b are GGUF via llama-server; mlx4 is MLX (snappy shallow);
+#     splash4 is incoai/Qwen3.8-27B-Splash (4-bit + DFlash2) on LM Studio's Splash engine.
 #     (mlx6/mlx8 removed 2026-08-30 — disqualified on 64 GB: mlx6 kernel-panicked,
 #      mlx8 dead at 41K. GGUF serves 6/8-bit safely instead.)
 #     gguf5 is the recommended 27B daily driver (warm cache to ~200K, safe memory);
@@ -108,7 +109,7 @@ PROXY_JS="${SCRIPT_DIR}/llm-proxy.mjs"
 # --- model registry (Q8 GGUFs, MTP draft depth = benchmarked peak) ------------
 # Single list of valid aliases, used for validation, error messages, and recovering
 # which model a running server is serving.
-MODEL_ALIASES="35b mlx4 gguf8 gguf6 gguf5 gguf4"
+MODEL_ALIASES="35b mlx4 gguf8 gguf6 gguf5 gguf4 splash4"
 
 model_path() {
   case "$1" in
@@ -119,6 +120,9 @@ model_path() {
     gguf6) echo "${HOME}/Models/qwen3.8-27b-gguf/Qwen3.8-27B-UD-Q6_K_XL.gguf" ;;
     gguf5) echo "${HOME}/Models/qwen3.8-27b-gguf/Qwen3.8-27B-UD-Q5_K_XL.gguf" ;;
     gguf4) echo "${HOME}/Models/qwen3.8-27b-gguf/Qwen3.8-27B-UD-Q4_K_XL.gguf" ;;
+    # Not a file: Splash weights are fixed-layout binaries only LM Studio's Splash
+    # runtime can map, so this is the LM Studio model key `lms load` takes.
+    splash4) echo "incoai/Qwen3.8-27B-Splash" ;;
     *) return 1 ;;
   esac
 }
@@ -130,6 +134,7 @@ model_path() {
 model_engine() {
   case "$1" in
     mlx4) echo "mlx" ;;
+    splash4) echo "splash" ;;
     *) echo "llamacpp" ;;
   esac
 }
@@ -150,12 +155,17 @@ model_draft() {
 # drafters), latest-only patch applied 2026-08-28. Old .mlxenv (0.6.15) kept as fallback.
 MLX_PY="${LLM_MLX_PY:-${HOME}/Desktop/Programming/local_llm_bench/.mlxenv-0617/bin/python}"
 
+# LM Studio CLI, for the splash engine. `lms bootstrap` puts it on PATH, but a fresh
+# install only has it under ~/.lmstudio/bin, so fall back to that.
+LMS="${LLM_LMS:-$(command -v lms 2>/dev/null || echo "${HOME}/.lmstudio/bin/lms")}"
+SPLASH_CTX="${LLM_SPLASH_CTX:-$CTX}"
+
 # Display name for a model alias. The family is no longer implied by the script: the two
 # aliases are now different Qwen generations, so a hardcoded prefix would mislabel one.
 model_family() {
   case "$1" in
     35b) echo "qwen3.6" ;;
-    mlx4|gguf8|gguf6|gguf5|gguf4) echo "qwen3.8" ;;
+    mlx4|gguf8|gguf6|gguf5|gguf4|splash4) echo "qwen3.8" ;;
     *) echo "qwen" ;;
   esac
 }
@@ -164,7 +174,7 @@ model_family() {
 # value would mean serving one of them against its own recommendation.
 model_temp() {
   case "$1" in
-    mlx4|gguf8|gguf6|gguf5|gguf4) echo 1.0 ;;
+    mlx4|gguf8|gguf6|gguf5|gguf4|splash4) echo 1.0 ;;
     *) echo 0.6 ;;
   esac
 }
@@ -176,6 +186,10 @@ model_temp() {
 draft_n() {
   case "$1" in
     35b) echo 1 ;;
+    # Per-quant measured optima on the 27B GGUFs: gguf8 (Q8_0) peaks at 3, gguf6
+    # (UD-Q6_K_XL) at 4; gguf5/gguf4 stay at the *) default of 2.
+    gguf8) echo 3 ;;
+    gguf6) echo 4 ;;
     # MLX draft_block_size, not a llama.cpp draft-n: the drafter proposes block_size - 1
     # tokens, so 3 is the checkpoint's configured block and what the sweep measured.
     mlx4) echo 3 ;;
@@ -215,9 +229,16 @@ reconcile() {
     if [[ -n "$argv" ]]; then
       local alias_ path_
       for alias_ in $MODEL_ALIASES; do
+        [[ "$(model_engine "$alias_")" == "splash" ]] && continue
         path_="$(model_path "$alias_")" || continue
         if [[ "$argv" == *"$path_"* ]]; then found="$alias_"; break; fi
       done
+      # An LM Studio server on our port has no model path in its argv. Recognising it
+      # matters beyond `status`: stop_server must unload it through `lms` rather than
+      # SIGTERM the LM Studio process itself.
+      if [[ -z "$found" ]]; then
+        case "$argv" in *"LM Studio"*|*lmstudio*|*llmster*) found="splash4" ;; esac
+      fi
     fi
     [[ -n "$found" ]] && echo "$found" >"$CURRENT"
   fi
@@ -295,9 +316,34 @@ wait_port_free() { # port
   return 1
 }
 
+# llama-server and mlx_vlm answer /health; LM Studio only has the OpenAI routes.
+health_url() {
+  local cur; cur="$(cat "$CURRENT" 2>/dev/null || true)"
+  if [[ -n "$cur" && "$(model_engine "$cur")" == "splash" ]]; then
+    echo "http://127.0.0.1:${LLAMA_PORT}/v1/models"
+  else
+    echo "http://127.0.0.1:${LLAMA_PORT}/health"
+  fi
+}
+
+# Stop whichever engine holds the model. Splash lives inside LM Studio, so killing the
+# pid on the port would take the app down with it; unload through `lms` instead.
+stop_server() {
+  local cur; cur="$(cat "$CURRENT" 2>/dev/null || true)"
+  if [[ -n "$cur" && "$(model_engine "$cur")" == "splash" ]]; then
+    echo "  unloading LM Studio model and stopping its server"
+    "$LMS" unload --all >/dev/null 2>&1 || true
+    "$LMS" server stop >/dev/null 2>&1 || true
+    rm -f "$SERVER_PID"
+  else
+    stop_pidfile "$SERVER_PID" "model server"
+  fi
+}
+
 wait_healthy() {
+  local url; url="$(health_url)"
   for _ in $(seq 1 300); do
-    if curl -sf --max-time 5 "http://127.0.0.1:${LLAMA_PORT}/health" >/dev/null 2>&1; then return 0; fi
+    if curl -sf --max-time 5 "$url" >/dev/null 2>&1; then return 0; fi
     if ! is_running "$SERVER_PID"; then
       echo "  llama-server died on startup — last lines:" >&2
       tail -20 "$SERVER_LOG" >&2
@@ -356,8 +402,19 @@ cmd_start() {
     echo "unknown model '$model' (expected one of: ${MODEL_ALIASES})" >&2
     exit 1
   fi
+  if [[ "$(model_engine "$model")" == "splash" ]]; then
+    if [[ ! -x "$LMS" ]]; then
+      echo "LM Studio CLI not found (looked for lms on PATH and ${HOME}/.lmstudio/bin/lms)" >&2
+      echo "install LM Studio, run ~/.lmstudio/bin/lms bootstrap, then enable Settings > Runtime > Splash (Metal)" >&2
+      exit 1
+    fi
+    if ! "$LMS" ls 2>/dev/null | grep -qiF "$(basename "$path")"; then
+      echo "model not downloaded: $path" >&2
+      echo "download it first:  lms get $path" >&2
+      exit 1
+    fi
   # GGUF models are a single file; MLX models are a directory of shards.
-  if [[ ! -f "$path" && ! -d "$path" ]]; then
+  elif [[ ! -f "$path" && ! -d "$path" ]]; then
     echo "model not found: $path" >&2
     echo "download it first — see local-setup/README.md section 5.2" >&2
     exit 1
@@ -384,10 +441,31 @@ cmd_start() {
     # ephemeral ports instead, leaving :${LLAMA_PORT} free. It gets restarted at
     # the end of this function.
     stop_pidfile "$PROXY_PID" "proxy"
-    stop_pidfile "$SERVER_PID" "model server"
+    stop_server
   fi
 
   wait_port_free "$LLAMA_PORT" || exit 1
+
+  if [[ "$(model_engine "$model")" == "splash" ]]; then
+    # The DFlash2 drafter ships inside the model and the runtime picks it up itself,
+    # so there is no draft flag, APC knob or mlock here — LM Studio owns all of that.
+    # Sampling is per-request: the proxy forwards Claude Code's temperature, and
+    # reasoning_effort rides along on every request exactly as for the other engines.
+    echo "starting $(model_family "$model")-${model} (LM Studio Splash, ctx ${SPLASH_CTX})"
+    "$LMS" server start --port "$LLAMA_PORT" >"$SERVER_LOG" 2>&1 || {
+      echo "  lms server start failed:" >&2; tail -20 "$SERVER_LOG" >&2; exit 1; }
+    echo "$model" >"$CURRENT"
+    "$LMS" load "$path" --identifier qwen-local --context-length "$SPLASH_CTX" \
+      --gpu max -y >>"$SERVER_LOG" 2>&1 || {
+      echo "  lms load failed:" >&2; tail -20 "$SERVER_LOG" >&2
+      "$LMS" server stop >/dev/null 2>&1 || true; rm -f "$CURRENT"; exit 1; }
+    # Record the listener so is_running/status work the same as for the other engines.
+    lsof -nP -iTCP:"$LLAMA_PORT" -sTCP:LISTEN -t 2>/dev/null | head -1 >"$SERVER_PID"
+    wait_healthy || exit 1
+    echo "  LM Studio (Splash) up on http://127.0.0.1:${LLAMA_PORT}  (OpenAI API)"
+    start_proxy
+    return
+  fi
 
   # LLM_SPEC=0 serves without speculative decoding — useful for benchmarking, or
   # if a draft head ever misbehaves. Measured: it does NOT change the first-turn
@@ -622,7 +700,7 @@ cmd_stop() {
   reconcile
   echo "stopping local LLM stack"
   stop_pidfile "$PROXY_PID" "proxy"
-  stop_pidfile "$SERVER_PID" "model server"
+  stop_server
   rm -f "$CURRENT"
   echo "  done"
 }
@@ -635,6 +713,7 @@ cmd_status() {
     rss="$(ps -o rss= -p "$(cat "$SERVER_PID")" | awk '{printf "%.1f GB", $1/1048576}')"
     local eng="llama-server"
     [[ "$(model_engine "$model")" == "mlx" ]] && eng="mlx_vlm.serv"
+    [[ "$(model_engine "$model")" == "splash" ]] && eng="lmstudio    "
     echo "${eng}  running   model=$(model_family "$model")-${model}  port=${LLAMA_PORT}  rss=${rss}"
   else
     echo "llama-server  stopped"
@@ -648,7 +727,7 @@ cmd_status() {
 
   # --max-time matters: with -np 1 a long generation occupies the only slot, and
   # an un-timed curl would hang `status` itself instead of reporting the state.
-  if curl -sf --max-time 5 "http://127.0.0.1:${LLAMA_PORT}/health" >/dev/null 2>&1; then
+  if curl -sf --max-time 5 "$(health_url)" >/dev/null 2>&1; then
     echo "health        ok"
   else
     echo "health        busy or not responding (a long generation may hold the slot)"
@@ -694,7 +773,12 @@ case "${1:-status}" in
   logs)
     case "${2:-server}" in
       proxy)  tail -f "$PROXY_LOG" ;;
-      *)      tail -f "$SERVER_LOG" ;;
+      # LM Studio keeps its own log; ours only has the start/load output.
+      *)
+        if [[ "$(model_engine "$(cat "$CURRENT" 2>/dev/null || echo -)")" == "splash" ]]; then
+          exec "$LMS" log stream
+        fi
+        tail -f "$SERVER_LOG" ;;
     esac ;;
   *)
     grep '^#' "$0" | sed -n '2,20p' | sed 's/^# \?//'
