@@ -20,8 +20,6 @@ metadataOverrides:
   domain: llm
   architectures:
     - qwen3_5
-  compatibilityTypes:
-    - yuzu
   paramsStrings:
     - 27B
   contextLengths:

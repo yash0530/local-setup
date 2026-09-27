@@ -1,0 +1,14 @@
+{
+  "type": "model",
+  "owner": "local",
+  "name": "qwen3.8-27b-splash",
+  "revision": 1,
+  "dependencies": [
+    {
+      "type": "model",
+      "purpose": "baseModel",
+      "modelKeys": ["incoai/qwen3.8-27b-splash"],
+      "sources": [{ "type": "huggingface", "user": "incoai", "repo": "Qwen3.8-27B-Splash" }]
+    }
+  ]
+}

@@ -80,16 +80,25 @@ LMS="${LLM_LMS:-$(command -v lms 2>/dev/null || echo "${HOME}/.lmstudio/bin/lms"
 SPLASH_CTX="${LLM_SPLASH_CTX:-$CTX}"
 # The downloaded weights the virtual model wraps, as `lms ls` names them.
 SPLASH_BASE_NAME="Qwen3.8-27B-Splash"
-SPLASH_VIRTUAL_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/dotfiles/lmstudio/qwen3.8-27b-splash/model.yaml"
-SPLASH_VIRTUAL_DST="${HOME}/.lmstudio/hub/models/local/qwen3.8-27b-splash/model.yaml"
+# A hub model is a manifest.json (base-weights dependency) plus model.yaml (the override).
+SPLASH_VIRTUAL_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/dotfiles/lmstudio/qwen3.8-27b-splash"
+SPLASH_VIRTUAL_DST="${HOME}/.lmstudio/hub/models/local/qwen3.8-27b-splash"
 
 # Keep LM Studio's copy of the virtual model in step with the repo (picked up on next load).
+# LM Studio re-indexes on change; a rejected model.yaml shows up as a ZodError in
+# ~/Library/Logs/LM Studio.
 ensure_splash_virtual_model() {
-  [[ -f "$SPLASH_VIRTUAL_SRC" ]] || { echo "missing $SPLASH_VIRTUAL_SRC" >&2; return 1; }
-  if ! cmp -s "$SPLASH_VIRTUAL_SRC" "$SPLASH_VIRTUAL_DST"; then
-    mkdir -p "$(dirname "$SPLASH_VIRTUAL_DST")"
-    cp "$SPLASH_VIRTUAL_SRC" "$SPLASH_VIRTUAL_DST"
+  local f changed=0
+  mkdir -p "$SPLASH_VIRTUAL_DST"
+  for f in manifest.json model.yaml; do
+    [[ -f "$SPLASH_VIRTUAL_SRC/$f" ]] || { echo "missing $SPLASH_VIRTUAL_SRC/$f" >&2; return 1; }
+    if ! cmp -s "$SPLASH_VIRTUAL_SRC/$f" "$SPLASH_VIRTUAL_DST/$f"; then
+      cp "$SPLASH_VIRTUAL_SRC/$f" "$SPLASH_VIRTUAL_DST/$f"; changed=1
+    fi
+  done
+  if [[ $changed == 1 ]]; then
     echo "  installed LM Studio virtual model local/qwen3.8-27b-splash"
+    sleep 3  # give the indexer a moment before `lms load` looks the key up
   fi
 }
 

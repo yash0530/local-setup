@@ -220,7 +220,7 @@ reaches the model.
 | UI | the LM Studio app → Chat, with Qwen3.8-27B-Splash loaded |
 
 Measured here (M5 Pro 64 GB): warm follow-ups in 1–2 s, 97–99% prompt-cache hits,
-35–84 t/s decode, and correct recall at 198,609 tokens of context (depth ladder,
+35–84 t/s decode, and correct recall at 227,078 tokens of context (depth ladder,
 2026-09-27; gguf5's best was 158,766).
 
 ### 5.1 llama.cpp (`--bits 5|6|8`)

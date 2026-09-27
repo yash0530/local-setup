@@ -125,9 +125,10 @@ Code sessions):
 - Warm follow-ups **1–2 s**; 97–99% of every prompt cached after the first request
   (LM Studio log `Done · input N · cached M`), TTFT 0.4–0.9 s.
 - Decode 35–84 t/s; cold 16k-token prefill ~33 s (~480 tok/s).
-- Correct recall at **198,609 tokens** of context on the depth ladder (gguf5's best
+- Correct recall at **227,078 tokens** of context on the depth ladder (stopped before the 50 GB GPU-memory limit; gguf5's best
   was 158,766).
-- Loads 262,144 ctx in ~15 s. The weights are mapped from disk, so wired memory stays low.
+- Loads 262,144 ctx in ~15 s. Wired memory grows with context: ~22 GB at 62k, ~38 GB at
+  199k, 44.8 GB at 227k (the GPU wired limit is 50 GB), so ~230k is the practical ceiling.
 - `llm-serve` starts it with `lms server start --port 8089` + `lms load … --identifier
   qwen-local`, so the proxy and `qwen` talk to it unchanged.
 - The downloaded model declares no reasoning capability, so LM Studio would drop

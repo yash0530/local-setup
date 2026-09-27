@@ -118,7 +118,7 @@ reasoning delivers thin answers at real latency cost.
 
 | Config | Warm follow-up | Decode | Deepest verified recall |
 |---|---|---|---|
-| splash4 (LM Studio Splash, DFlash2) | **1–2 s** (97–99% cached) | 35–84 t/s | **198,609** tokens |
+| splash4 (LM Studio Splash, DFlash2) | **1–2 s** (97–99% cached) | 35–84 t/s | **227,078** tokens (stopped at 44.8 GB wired) |
 | gguf5 (llama.cpp, MTP n=2) | ~8 s | ~13–20 t/s | 158,766 tokens |
 
 A new model should beat the relevant row or it isn't worth switching.
