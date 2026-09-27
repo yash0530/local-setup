@@ -20,7 +20,7 @@
  *   -e, --effort LEVEL  reasoning effort when thinking: low|medium|xhigh
  *                       (default xhigh, or $LLM_EFFORT)
  *   -m, --max-tokens N  cap generated tokens (default 4096)
- *       --temp N        sampling temperature (default 0.6)
+ *       --temp N        sampling temperature (default 1.0, Qwen 3.8's recommendation)
  *       --raw           print without the trailing newline fixups
  */
 
@@ -39,7 +39,7 @@ function usage(code = 0) {
 const args = process.argv.slice(2);
 if (!args.length && process.stdin.isTTY) usage(1);
 
-const opts = { files: [], think: false, effort: process.env.LLM_EFFORT || "xhigh", maxTokens: 4096, temp: 0.6, system: null, raw: false };
+const opts = { files: [], think: false, effort: process.env.LLM_EFFORT || "xhigh", maxTokens: 4096, temp: 1.0, system: null, raw: false };
 const promptParts = [];
 
 for (let i = 0; i < args.length; i++) {

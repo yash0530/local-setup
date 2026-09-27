@@ -82,14 +82,13 @@ Plain `claude` behaves exactly as the old `alias claude="claude
 ```bash
 claude                       # Pro subscription, --dangerously-skip-permissions
 claude open_router ox_alpha  # OpenRouter (Stealth Ox Alpha)
-claude local qwen38_27       # local 27B dense
-claude local qwen36_35       # local 35B A3B MoE
+claude local qwen38_27       # local Qwen 3.8 27B
 claude local                 # whichever model is already resident
 claude subagent              # Pro + the opt-in local delegation subagent
 ```
 
 Every branch forwards `"$@"`, so flags survive: `claude -p "..."`,
-`claude local qwen36_35 --resume`. Inside the function, `command claude`
+`claude local qwen38_27 --resume`. Inside the function, `command claude`
 bypasses it, so it cannot recurse.
 
 `agy` is still a plain alias:
@@ -126,12 +125,11 @@ Claude Code on local weights goes through the §3.1 dispatcher:
 ```bash
 claude local qwen38_27   # Qwen 3.8 27B (dense, higher quality)
 claude local qwen38_27 --bits 4   # same model, 4-bit on LM Studio's Splash engine
-claude local qwen36_35   # Qwen 3.6 35B A3B (MoE, ~4x faster)
 claude local             # whichever model is resident
 claude subagent          # Pro plan + the local-qwen delegation subagent
 ```
 
-The older `claude_local_qwen_3.8_27` / `_3.6_35` / `claude_local` /
+The older `claude_local_qwen_3.8_27` / `claude_local` /
 `claude_local_subagent` aliases are still defined and still work — they are what
 the dispatcher branches call — but the `claude local ...` form is the one to
 use.
@@ -199,9 +197,11 @@ The auto-resume daemon runs silently in the background via `launchd` (`com.user.
 
 ---
 
-## 5. Local LLM Setup (Qwen 3.6 27B & 35B MoE)
+## 5. Local LLM Setup (Qwen 3.8 27B)
 
-Based on benchmark evaluations, the fastest served versions are the **8-bit quantized GGUF models** running speculative decoding (MTP) on **`llama.cpp`** (`llama-server`).
+One model, two engines: **LM Studio's Splash engine** (4-bit, `--bits 4`, the fastest)
+and **`llama.cpp`** (`llama-server`) GGUFs at 5/6/8-bit with MTP speculative decoding.
+Qwen 3.6 35B A3B was removed on 2026-09-27 once Splash made the 27B fast enough.
 
 The local models are wired into **Claude Code only**. Kiro and agy were evaluated
 and deliberately left out — agy cannot reach a local model at all (it ignores
@@ -218,9 +218,9 @@ Silicon. With one user at the keyboard, keep MTP and let requests queue.
 > Short version — `setup.sh` installs `llm-serve`, `qwen`, and `qwen-code`:
 >
 > ```bash
-> llm-serve start              # load 35B A3B + the Anthropic-translation proxy
+> llm-serve start splash4      # load Qwen 3.8 27B on Splash + the Anthropic-translation proxy
 > qwen "explain this regex"    # one-shot, from your shell or a Bash call
-> claude local qwen36_35       # Claude Code running 100% on local weights
+> claude local qwen38_27 --bits 4   # Claude Code running 100% on local weights
 > ```
 >
 > Plain `claude` is unaffected and still uses your Claude Pro subscription.
@@ -345,17 +345,6 @@ below Q8 you are faster with `LLM_SPEC=0`.
     --temp 1.0 --top-p 0.95 --top-k 20 --host 127.0.0.1 --port 8089
   ```
 
-#### 🥈 Model 2: Qwen 3.6 35B A3B (MoE) — 8-bit Quant (Q8_0) + MTP
-- **Best speculative draft depth**: `draft-n=1` (Acceptance rate: **78%**).
-- **Performance**: Peak **67.2 tok/s** decode (1.21x speedup vs MTP off).
-- **Launch Command (`serve_qwen_36_35b`)**:
-  ```bash
-  llama-server -m ~/Models/qwen3.6-35b-a3b-mtp-q8/Qwen3.6-35B-A3B-Q8_0.gguf \
-    --spec-type draft-mtp --spec-draft-n-max 1 \
-    -c 65536 -ngl 99 -fa on -np 1 --mlock -ctk q8_0 -ctv q8_0 --jinja --reasoning-format deepseek \
-    --temp 0.6 --top-p 0.95 --top-k 20 --host 127.0.0.1 --port 8089
-  ```
-
 `llm-serve` additionally passes `--cache-reuse 256` (salvages matching KV chunks
 by shifting instead of all-or-nothing prefix matching) and `--slot-save-path`
 (enables the `/slots` save/restore endpoints — inert until something calls
@@ -371,6 +360,4 @@ huggingface-cli download unsloth/Qwen3.8-27B-GGUF Qwen3.8-27B-Q8_0.gguf --local-
 huggingface-cli download mlx-community/Qwen3.8-27B-8bit --local-dir ~/Models/qwen3.8-27b-mlx-8bit
 huggingface-cli download vvsotnikov/Qwen3.8-27B-MTP-MLX-8bit --local-dir ~/Models/qwen3.8-27b-mtp-mlx-8bit
 
-# Qwen 3.6 35B A3B GGUF
-huggingface-cli download unsloth/Qwen3.6-35B-A3B-MTP-GGUF Qwen3.6-35B-A3B-Q8_0.gguf --local-dir ~/Models/qwen3.6-35b-a3b-mtp-q8
 ```

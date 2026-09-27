@@ -4,14 +4,14 @@
 # Serving flags come from the local_llm_bench sweep: the draft depth for each
 # model is the measured peak, not a guess.
 #
-#   llm-serve start [gguf5|gguf4|gguf6|gguf8|35b|mlx4|splash4]
-#     default gguf5. gguf*/35b are GGUF via llama-server; mlx4 is MLX (snappy shallow);
+#   llm-serve start [gguf5|gguf4|gguf6|gguf8|mlx4|splash4]
+#     default gguf5. gguf* are GGUF via llama-server; mlx4 is MLX (snappy shallow);
 #     splash4 is incoai/Qwen3.8-27B-Splash (4-bit + DFlash2) on LM Studio's Splash engine.
 #     (mlx6/mlx8 removed 2026-08-30 — disqualified on 64 GB: mlx6 kernel-panicked,
 #      mlx8 dead at 41K. GGUF serves 6/8-bit safely instead.)
 #     gguf5 is the recommended 27B daily driver (warm cache to ~200K, safe memory);
 #     see local_llm_bench/results/vacation-run/RECOMMENDATION.md for the full rationale
-#     and the mlx4/gguf8/35b trade-offs.
+#     and the mlx4/gguf8 trade-offs. (Qwen 3.6 35B A3B removed 2026-09-27.)
 #   llm-serve stop              stop everything
 #   llm-serve status            what's running, and whether it answers
 #   llm-serve restart [model]   stop then start (defaults to the resident model)
@@ -24,8 +24,8 @@ set -euo pipefail
 
 STATE_DIR="${HOME}/.local/state/local-llm"
 LOG_DIR="${STATE_DIR}/logs"
-# KV slot cache. Cold prefill runs ~214 tok/s on the 35B A3B, so a 141K resume
-# costs ~11 min on a cache miss. --slot-save-path only enables the
+# KV slot cache. Cold prefill at deep context runs ~130-190 tok/s on the 27B GGUFs, so
+# a deep resume costs many minutes on a cache miss. --slot-save-path only enables the
 # /slots/{id}?action=save|restore endpoints; llama.cpp does not persist or
 # reload slots on its own, so nothing uses this until something calls them.
 # NOTE: --cache-reuse is a no-op on the hybrid Qwen3.8 arch (removed); see LLAMA_CACHE_RAM_MIB.
@@ -108,11 +108,10 @@ PROXY_JS="${SCRIPT_DIR}/llm-proxy.mjs"
 # --- model registry (Q8 GGUFs, MTP draft depth = benchmarked peak) ------------
 # Single list of valid aliases, used for validation, error messages, and recovering
 # which model a running server is serving.
-MODEL_ALIASES="35b mlx4 gguf8 gguf6 gguf5 gguf4 splash4"
+MODEL_ALIASES="mlx4 gguf8 gguf6 gguf5 gguf4 splash4"
 
 model_path() {
   case "$1" in
-    35b) echo "${HOME}/Models/qwen3.6-35b-a3b-mtp-q8/Qwen3.6-35B-A3B-Q8_0.gguf" ;;
     mlx4) echo "${HOME}/Models/qwen3.8-27b-mlx-4bit" ;;
     # unsloth GGUFs (inline MTP head — no separate drafter file needed)
     gguf8) echo "${HOME}/Models/qwen3.8-27b-gguf/Qwen3.8-27B-Q8_0.gguf" ;;
@@ -160,32 +159,28 @@ MLX_PY="${LLM_MLX_PY:-${HOME}/Desktop/Programming/local_llm_bench/.mlxenv-0617/b
 LMS="${LLM_LMS:-$(command -v lms 2>/dev/null || echo "${HOME}/.lmstudio/bin/lms")}"
 SPLASH_CTX="${LLM_SPLASH_CTX:-$CTX}"
 
-# Display name for a model alias. The family is no longer implied by the script: the two
-# aliases are now different Qwen generations, so a hardcoded prefix would mislabel one.
+# Display name for a model alias.
 model_family() {
   case "$1" in
-    35b) echo "qwen3.6" ;;
     mlx4|gguf8|gguf6|gguf5|gguf4|splash4) echo "qwen3.8" ;;
     *) echo "qwen" ;;
   esac
 }
 
-# Qwen 3.8 asks for temp 1.0 in thinking mode; 3.6 asks for 0.6. Serving both at one
-# value would mean serving one of them against its own recommendation.
+# Qwen 3.8 asks for temp 1.0 in thinking mode. Kept per-alias so a future model with a
+# different recommendation isn't silently served at this one's value.
 model_temp() {
   case "$1" in
-    mlx4|gguf8|gguf6|gguf5|gguf4|splash4) echo 1.0 ;;
-    *) echo 0.6 ;;
+    *) echo 1.0 ;;
   esac
 }
 
 # Peak-throughput draft depth per model, measured over the sweep:
-#   35B A3B: n=1 -> 67.2 tok/s (78% accept)   27B: n=3 -> 19.8 tok/s (68% accept)
+#   27B: n=3 -> 19.8 tok/s (68% accept)
 # The `*)` default matters: without it an unknown alias yields an empty string and the
 # launch line becomes `--spec-draft-n-max ` with no value.
 draft_n() {
   case "$1" in
-    35b) echo 1 ;;
     # Per-quant measured optima on the 27B GGUFs: gguf8 (Q8_0) peaks at 3, gguf6
     # (UD-Q6_K_XL) at 4; gguf5/gguf4 stay at the *) default of 2.
     gguf8) echo 3 ;;
@@ -737,13 +732,14 @@ cmd_status() {
 case "${1:-status}" in
   start)   shift; cmd_start "${1:-gguf5}" ;;
   stop)    cmd_stop ;;
-  # Read $CURRENT BEFORE cmd_stop, which deletes it. Defaulting to 35b here meant a bare
-  # `LLM_APC=0 llm-serve restart` silently swapped a resident MLX model for the 37 GB GGUF
-  # — and since APC and the drafter are MLX-only, every flag you were restarting to change
-  # became a no-op at the same time.
+  # Read $CURRENT BEFORE cmd_stop, which deletes it. A fixed default here once meant a
+  # bare `LLM_APC=0 llm-serve restart` silently swapped a resident MLX model for a 37 GB
+  # GGUF — and since APC and the drafter are MLX-only, every flag you were restarting to
+  # change became a no-op at the same time. The fallback only applies when nothing is
+  # resident.
   restart)
     shift
-    _want="${1:-$(cat "$CURRENT" 2>/dev/null || echo 35b)}"
+    _want="${1:-$(cat "$CURRENT" 2>/dev/null || echo gguf5)}"
     cmd_stop; cmd_start "$_want" ;;
   # Picking up a proxy edit shouldn't cost a 37 GB model reload.
   restart-proxy)

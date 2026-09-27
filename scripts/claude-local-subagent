@@ -14,7 +14,7 @@
 #
 # Every argument is passed through to `claude` untouched.
 #
-# Note this is NOT the same as claude_local_qwen_3.6_*, which run Claude Code
+# Note this is NOT the same as `claude local ...`, which runs Claude Code
 # itself on local weights. Here the driver is your normal Claude model.
 
 set -euo pipefail

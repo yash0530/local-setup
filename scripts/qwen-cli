@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# qwen-cli [gguf4|gguf5|gguf6|gguf8|35b|splash4] [--think low|medium|xhigh]
+# qwen-cli [gguf4|gguf5|gguf6|gguf8|splash4] [--think low|medium|xhigh]
 #
 # Native llama.cpp interactive chat (llama-cli) on a local Qwen quant, with MTP
 # speculative decoding and the stack's sampling config. Type prompts; llama.cpp prints
@@ -19,8 +19,8 @@ Q=gguf5; THINK="${LLM_EFFORT:-xhigh}"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --think) THINK="${2:-}"; shift 2 ;;
-    gguf4|gguf5|gguf6|gguf8|35b|splash4) Q="$1"; shift ;;
-    -h|--help) echo "usage: qwen-cli [gguf4|gguf5|gguf6|gguf8|35b|splash4] [--think low|medium|xhigh]"; exit 0 ;;
+    gguf4|gguf5|gguf6|gguf8|splash4) Q="$1"; shift ;;
+    -h|--help) echo "usage: qwen-cli [gguf4|gguf5|gguf6|gguf8|splash4] [--think low|medium|xhigh]"; exit 0 ;;
     *) echo "qwen-cli: unknown arg '$1'" >&2; exit 1 ;;
   esac
 done
@@ -37,7 +37,6 @@ case "$Q" in
   gguf5) M=~/Models/qwen3.8-27b-gguf/Qwen3.8-27B-UD-Q5_K_XL.gguf; N=2; T=1.0 ;;
   gguf6) M=~/Models/qwen3.8-27b-gguf/Qwen3.8-27B-UD-Q6_K_XL.gguf; N=2; T=1.0 ;;
   gguf8) M=~/Models/qwen3.8-27b-gguf/Qwen3.8-27B-Q8_0.gguf;       N=2; T=1.0 ;;
-  35b)   M=~/Models/qwen3.6-35b-a3b-mtp-q8/Qwen3.6-35B-A3B-Q8_0.gguf; N=1; T=0.6 ;;
 esac
 [[ -f "$M" ]] || { echo "qwen-cli: model not found: $M" >&2; exit 1; }
 

@@ -1,7 +1,8 @@
-# Wiring local Qwen 3.6 into Claude Code
+# Wiring local Qwen 3.8 into Claude Code
 
-How to use the two locally-served Qwen 3.6 models as working agents inside Claude
-Code. Every number and command below was measured or executed on this box
+How to use the locally-served Qwen 3.8 27B (LM Studio Splash or llama.cpp GGUF) as a
+working agent inside Claude Code. Qwen 3.6 35B A3B was removed on 2026-09-27; numbers
+below labelled "35B" are kept as historical measurements only. Every number and command below was measured or executed on this box
 (M5 Pro, 64 GB), not estimated.
 
 **Scope: Claude Code only.** Kiro and agy were evaluated and deliberately left
@@ -27,7 +28,7 @@ And what each harness actually got:
 
 | Harness | What it got | How you use it |
 |---|---|---|
-| **Claude Code** | Everything — proxy, opt-in subagent, CLI | `claude local qwen36_35`, or `claude subagent`, or run `qwen` yourself |
+| **Claude Code** | Everything — proxy, opt-in subagent, CLI | `claude local qwen38_27`, or `claude subagent`, or run `qwen` yourself |
 | **Kiro** | **Nothing — removed** | n/a |
 | **agy** | **Nothing** | n/a |
 
@@ -104,8 +105,8 @@ appears in its 17-tool list) and cannot take a custom endpoint.
 
 ```
                  ┌─────────────────────────────────────────┐
-                 │   llama-server  :8089  (OpenAI API)      │
-                 │   one Qwen 3.6 GGUF resident at a time   │
+                 │ llama-server or LM Studio :8089 (OpenAI) │
+                 │   one Qwen 3.8 model resident at a time  │
                  └─────────────────────────────────────────┘
                      ▲                          ▲
         OpenAI HTTP  │                          │ HTTP
@@ -131,16 +132,16 @@ appears in its 17-tool list) and cannot take a custom endpoint.
 ## 2. Quick start
 
 ```bash
-llm-serve start            # loads 35B A3B + proxy (~7 s warm, ~40 s cold)
+llm-serve start splash4    # loads Qwen 3.8 27B on Splash + proxy (~15 s)
 llm-serve status           # what's resident, and is it healthy
 
 qwen "explain this regex: ^\d{3}-\d{4}$"        # one-shot, ~1 s
 git diff | qwen "write a conventional-commit message"
 
-claude local qwen36_35     # interactive Claude Code, 100% local
-claude local qwen38_27     # same, on the 27B dense model
+claude local qwen38_27 --bits 4   # interactive Claude Code, 100% local (Splash)
+claude local qwen38_27            # same model, 5-bit GGUF on llama.cpp
 
-llm-serve stop             # frees ~36 GB
+llm-serve stop             # frees the model
 ```
 
 `claude` on its own is untouched and still uses your **Claude Pro subscription**.
@@ -151,30 +152,19 @@ No Anthropic env vars are exported globally — they are scoped inside the
 
 ## 3. Which model, and why
 
-From `local_llm_bench` (`REPORT.md`), Q8 with MTP speculative decoding at the
-measured-optimal draft depth:
+**Current answer (2026-09-27): Qwen 3.8 27B only.** `claude local qwen38_27 --bits 4`
+runs it on LM Studio Splash (fastest, warm follow-ups in 1–2 s); `--bits 5|6|8` runs a
+GGUF on llama.cpp. Only one model is resident, so `llm-serve start <alias>` **replaces**
+whatever is loaded, and the proxy survives the switch because it is model-agnostic.
 
-| | **35B A3B** (MoE) | **27B** (dense) |
-|---|---|---|
-| decode | **67.2 tok/s** (draft-n=1, 78% accept) | 17.7 tok/s (draft-n=2, 68% accept) |
-| prompt processing | ~910 tok/s | ~275 tok/s |
-| TTFT | ~235 ms | ~750 ms |
-| judged quality | not separately graded | **8.7 / 10** |
-| resident RSS @ 65k ctx | 36.3 GB | 28.4 GB |
+From `local_llm_bench` (`REPORT.md`), the 27B at Q8 with MTP on llama.cpp: 17.7 tok/s
+decode (draft-n=2, 68% accept), ~275 tok/s prompt processing, ~750 ms TTFT, judged
+quality **8.7 / 10**, 28.4 GB resident at 65k. These are **shallow-context** figures;
+prompt processing degrades sharply with depth, so budget deep prefill off the degraded
+rate — see §6 on the idle watchdogs.
 
-> These are **shallow-context** figures. Prompt-processing throughput degrades
-> sharply with depth: the 35B's ~910 tok/s headline measured **214 tok/s** on a
-> 141k-token resume. Budget deep-context prefill off the degraded rate, not this
-> table — see §6 on the idle watchdogs.
-
-**Default to 35B A3B.** It is ~3.8x faster to decode and ~3.3x faster to prefill.
-For an agent loop — which is many round-trips of a large prompt — that gap is the
-difference between usable and unusable. Reach for the 27B only when a single
-answer's quality justifies waiting roughly 4x longer.
-
-Only one fits in 64 GB, so `llm-serve start <model>` **replaces** the resident
-one (verified: 35b→27b switches cleanly, and the proxy survives it because it is
-model-agnostic).
+History: Qwen 3.6 35B A3B (MoE, 67 tok/s decode) was the default for agent loops until
+Splash made the 27B fast enough; it was removed on 2026-09-27.
 
 **The 27B now serves from MLX, not llama.cpp** (changed 2026-08-15 after the Qwen
 3.8 quant sweep). Aliases `mlx8` / `mlx6` / `mlx4` launch `mlx_vlm.server`; `27b`
@@ -183,9 +173,6 @@ remains the llama.cpp fallback. MLX beat llama.cpp at every matched size — 13.
 (1.28 s vs 1.50 s), which is what makes the decode win actually count. On Qwen 3.6
 the same comparison went the other way because MLX re-prefilled the whole preamble
 every turn; on 3.8 its prompt cache engages.
-
-The speed gap above still holds against the 35B, so it remains the default for
-agent loops. The MLX 27B narrows the gap rather than closing it.
 
 **Update 2026-08-28 — 27B quant settled: `mlx4` only.** The vacation-run campaign
 (`local_llm_bench/results/vacation-run/`) upgraded the runtime to mlx-vlm 0.6.17
@@ -250,11 +237,11 @@ alone measure **~23,000 tokens**, so a 16k window can't even hold the preamble.
 cache and MTP speculative decoding:
 
 ```bash
-llama-server -m ~/Models/qwen3.6-35b-a3b-mtp-q8/Qwen3.6-35B-A3B-Q8_0.gguf \
-  --spec-type draft-mtp --spec-draft-n-max 1 \
+llama-server -m ~/Models/qwen3.8-27b-gguf/Qwen3.8-27B-UD-Q5_K_XL.gguf \
+  --spec-type draft-mtp --spec-draft-n-max 2 \
   -c 262144 -ngl 99 -fa on -np 1 \
   --jinja --reasoning-format deepseek --reasoning-budget -1 \
-  --temp 0.6 --top-p 0.95 --top-k 20 \
+  --temp 1.0 --top-p 0.95 --top-k 20 \
   -a qwen-local --host 127.0.0.1 --port 8089
 ```
 
@@ -267,8 +254,8 @@ What each harness-specific flag buys you:
 - **`-ctk q8_0 -ctv q8_0`** — quantizes the KV cache, which is what makes the
   full window affordable at all.
 - **`--spec-type draft-mtp --spec-draft-n-max N`** — **yes, MTP is on**, at the
-  benchmarked peak depth per model: **n=1 for the 35B A3B** (78% accept, 1.21x)
-  and **n=2 for the 27B** (68% accept, 1.80x). `llm-serve` picks this per model;
+  benchmarked peak depth per quant: **n=2 for gguf5** (68% accept, 1.80x), 3 for
+  gguf8, 4 for gguf6. `llm-serve` picks this per model;
   you never pass it by hand.
 - **`--reasoning-budget -1`** — thinking is **unlimited**. The quality of these
   models comes from letting them finish; the proxy's heartbeat (§6) is what stops
@@ -656,6 +643,5 @@ All of it is reproducible on a new machine with `./setup.sh` from this repo.
   Budget one full prefill per session; everything after that is cached.
 - **The 27B is prefill-bound, not generation-bound.** ~20k tokens of harness
   prompt at ~275 tok/s on an unloaded machine is ~75 s before the first token.
-  The 35B A3B MoE prefills the same prompt roughly 3x faster (measured 25 s vs
-  77 s cold) — pick it when session start-up latency matters more than peak
-  reasoning quality.
+  Splash (`--bits 4`) prefills ~2x faster (~350–480 tok/s) and keeps follow-ups
+  warm — pick it when start-up latency matters.

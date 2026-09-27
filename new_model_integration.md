@@ -166,7 +166,6 @@ mechanical failures. Watch the thinking-budget share: a quant that spends
 
 | Config | Warm follow-up | Decode | Ceiling |
 |---|---|---|---|
-| qwen3.6-35b (GGUF Q8, MTP n=1) | ~2 s | 67 t/s | 262k native |
 | qwen3.8-27b mlx4 (MTP, APC=2, patches) | 2–4 s | 21–26 t/s | healthy ~58k, OOM 80k |
 | qwen3.8-27b gguf4 (b10621, MTP n=2) | 8 s | ~13–20 t/s | TBD (STRESS-GGUF.md) |
 | qwen3.8-27b splash4 (LM Studio Splash, DFlash2) | **1–2 s** (TTFT 0.4–0.9 s, 97–99% cached) | 50–84 t/s | 262k loads; depth TBD |
