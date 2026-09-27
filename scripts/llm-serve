@@ -60,14 +60,13 @@ THINK_BUDGET="${LLM_THINK_BUDGET:--1}"
 # llama.cpp b10621+'s hybrid context checkpoints (verified 2026-08-29, STRESS-GGUF.md).
 LLAMA_CACHE_RAM_MIB="${LLM_CACHE_RAM_MIB:-24576}"
 
-# Qwen 3.8 defaults to "xhigh" reasoning effort, which is why a trivial turn can spend a
-# minute thinking before the first visible token. LLM_EFFORT=low|medium|xhigh is passed
-# to the proxy and forwarded on each request; unset leaves the model's own default.
-# Default to "medium". Qwen 3.8's own default is "xhigh", which on an agent loop means
-# ~900-2000 reasoning tokens even for "what is up" — at ~14 tok/s that is most of a
-# minute before the first visible token. Set LLM_EFFORT=xhigh to restore the model's
-# default, or low to trim further.
-LLM_EFFORT="${LLM_EFFORT:-medium}"
+# Reasoning effort, passed to the proxy and forwarded on every request to every engine.
+# LLM_EFFORT=low|medium|xhigh. Default is "xhigh" (Qwen 3.8's own default), chosen
+# 2026-09-27 for answer quality over latency. The cost is real on the slower engines:
+# ~900-2000 reasoning tokens even for "what is up", which at ~14 tok/s is most of a
+# minute before the first visible token. `claude local ... --think medium` (or
+# LLM_EFFORT=medium) trims it back per session.
+LLM_EFFORT="${LLM_EFFORT:-xhigh}"
 
 # --- APC disk tier (MLX only) -------------------------------------------------
 # The in-RAM exact cache is bounded by ENTRY COUNT, not by bytes, and there is no
