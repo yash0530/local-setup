@@ -18,6 +18,13 @@ Kiro carries the bulk of the straightforward implementation; you keep the judgme
 3. **One delegation per batch** — Kiro does multi-file work itself; never fan out into N runner calls.
 4. **Foreground by default.** Use `run_in_background: true` only for a long batch (>~8 min); then make no workspace edits and start no other Kiro task until it returns (serial lock — overlapping runs clobber files).
 
+## Gotchas (learned the hard way)
+- **Tool trust:** `kiro-cli --no-interactive` denies every tool call unless trusted ("non-interactive mode (no user to approve)") and returns having done nothing. The wrapper now passes `--trust-all-tools` by default; `KIRO_TRUST=read` restricts to read-only tools.
+- **Models:** `--model opus` = Claude Opus 5.5, `sonnet` = Sonnet 5. Aliases in `scripts/kiro-run.sh` go stale as kiro adds models — check `kiro-cli chat --list-models` when a user names a specific version.
+- **Long runs:** the runner's Bash call caps at 10 min. For bigger batches tell the runner the task is long so it uses its background-and-poll pattern.
+- **Shared checkout:** if anything else is running from the repo (a benchmark, a server), give Kiro its own `git worktree` so its edits can't change live scripts, then merge.
+- **Put hard rules in the spec:** which paths are off-limits, "static edits only / don't start servers", "don't push". Kiro follows the spec file closely.
+
 ## After it returns
 1. **Sync (always):** `git diff --stat` / `git status` to confirm real changes.
 2. **Review by judgment:** trust boilerplate, tests, and simple scripts. Read the diff line-by-line only for business logic, security, or DB migrations. `/kiro:review` buys a deeper second opinion cheaply.

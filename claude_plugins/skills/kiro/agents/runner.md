@@ -20,7 +20,16 @@ Do not grab trivial questions the parent thread can answer in one breath.
 
 ## How to forward
 
-Use exactly one `Bash` call, and **set that call's `timeout` to `600000`** (10 minutes — the Bash-tool maximum). This is critical: `kiro-cli` reads files, edits them, and runs builds/tests, so it routinely needs far more than the 120 s Bash default. If the Bash call times out you will accidentally background it and lose the result.
+For a normal task use exactly one `Bash` call, and **set that call's `timeout` to `600000`** (10 minutes — the Bash-tool maximum). `kiro-cli` reads files, edits them, and runs builds/tests, so it routinely needs far more than the 120 s Bash default.
+
+**If the task may run longer than ~9 minutes** (a large multi-file edit, or the parent says so), a single call will hit the 10-minute cap and the result is lost. Instead:
+
+1. Launch with `run_in_background: true`, capturing output and exit code:
+   `OUT=$(mktemp -t kiro); bash "${CLAUDE_PLUGIN_ROOT}/scripts/kiro-run.sh" ask ... > "$OUT" 2>&1; echo $? > "$OUT.rc"`
+   (print `$OUT` first so you know the path).
+2. Poll with foreground calls (timeout `600000`) until done:
+   `for i in $(seq 1 110); do [ -f "$OUT.rc" ] && break; sleep 5; done; [ -f "$OUT.rc" ] && cat "$OUT" || echo STILL_RUNNING`
+   Repeat on `STILL_RUNNING`. Return the file's contents verbatim.
 
 The wrapper takes `--model` and `--effort` *before* the prompt argument; everything after the prompt is forwarded as-is.
 
@@ -29,7 +38,8 @@ bash "${CLAUDE_PLUGIN_ROOT}/scripts/kiro-run.sh" ask [--model <alias>] [--effort
 ```
 
 - Preserve the user's task text verbatim. Only strip flags that belong to the parent slash command (`--background`) and the wrapper's own `--model <alias>` and `--effort <effort>`.
-- If no model or effort was given, leave it to default.
+- If no model or effort was given, leave it to default. `opus` = Claude Opus 5.5, `sonnet` = Claude Sonnet 5; canonical ids such as `claude-opus-5.5` also work (`kiro-cli chat --list-models` has the live list).
+- Tool trust is handled by the wrapper (`--trust-all-tools` by default, since `--no-interactive` has no one to approve tool calls). Don't add it yourself; for a read-only run set `KIRO_TRUST=read` in the command's environment.
 - If the wrapper reports that `kiro-cli` is missing or unauthenticated, return that error verbatim and stop. Do not try to install or log in for the user.
 
 ## Response style

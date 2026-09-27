@@ -76,15 +76,20 @@ print_model_table() {
   {
     echo "Aliases (case-insensitive):"
     echo "  auto                          -> Auto-select model"
-    echo "  opus, claude-opus             -> Claude Opus 4.8"
-    echo "  sonnet, claude-sonnet         -> Claude Sonnet 4.6"
+    echo "  opus, claude-opus, opus-5.5   -> Claude Opus 5.5"
+    echo "  opus-5 / opus-4.8 / opus-4.7  -> older Opus versions"
+    echo "  sonnet, claude-sonnet, sonnet-5 -> Claude Sonnet 5"
+    echo "  sonnet-4.6                    -> Claude Sonnet 4.6"
     echo "  haiku, claude-haiku           -> Claude Haiku 4.5"
     echo "  deepseek                      -> DeepSeek V3.2"
     echo "  minimax                       -> MiniMax M2.5"
     echo "  qwen                          -> Qwen3 Coder Next"
     echo
     echo "Canonical strings (accepted verbatim):"
-    echo "  auto, claude-opus-4.8, claude-opus-4.7, claude-opus-4.6"
+    echo "  auto, claude-opus-5.5, claude-opus-5, claude-sonnet-5"
+    echo "  claude-opus-4.8, claude-opus-4.7, claude-opus-4.6"
+    echo "  gpt-5.6-sol, gpt-5.6-terra, gpt-5.6-luna"
+    echo "  (run \`kiro-cli chat --list-models\` for the live list)"
     echo "  claude-sonnet-4.6, claude-opus-4.5, claude-sonnet-4.5, claude-sonnet-4"
     echo "  claude-haiku-4.5, deepseek-3.2, minimax-m2.5, minimax-m2.1, glm-5, qwen3-coder-next"
   } >&"$fd"
@@ -99,6 +104,12 @@ resolve_model_alias() {
   fi
   case "$input" in
     "auto"|\
+    "claude-opus-5.5"|\
+    "claude-opus-5"|\
+    "claude-sonnet-5"|\
+    "gpt-5.6-sol"|\
+    "gpt-5.6-terra"|\
+    "gpt-5.6-luna"|\
     "claude-opus-4.8"|\
     "claude-opus-4.7"|\
     "claude-opus-4.6"|\
@@ -118,10 +129,13 @@ resolve_model_alias() {
   local lc; lc="$(printf '%s' "$input" | tr '[:upper:]' '[:lower:]')"
   case "$lc" in
     auto)                       printf '%s' "auto" ;;
-    opus|claude-opus|opus-4.8)  printf '%s' "claude-opus-4.8" ;;
+    opus|claude-opus|opus-5.5|opus5.5) printf '%s' "claude-opus-5.5" ;;
+    opus-5|opus5)               printf '%s' "claude-opus-5" ;;
+    opus-4.8)                   printf '%s' "claude-opus-4.8" ;;
     opus-4.7)                   printf '%s' "claude-opus-4.7" ;;
     opus-4.6)                   printf '%s' "claude-opus-4.6" ;;
-    sonnet|claude-sonnet|sonnet-4.6) printf '%s' "claude-sonnet-4.6" ;;
+    sonnet|claude-sonnet|sonnet-5|sonnet5) printf '%s' "claude-sonnet-5" ;;
+    sonnet-4.6)                 printf '%s' "claude-sonnet-4.6" ;;
     haiku|claude-haiku)         printf '%s' "claude-haiku-4.5" ;;
     deepseek)                   printf '%s' "deepseek-3.2" ;;
     minimax)                    printf '%s' "minimax-m2.5" ;;
@@ -218,11 +232,25 @@ cmd_ask() {
       run_args+=("--effort" "$effort")
     fi
 
+    # --no-interactive has nobody to approve tool calls, so without a trust flag kiro
+    # denies every one ("rejected ... non-interactive mode (no user to approve)") and
+    # returns having done nothing. Trust all tools unless the caller passed its own
+    # --trust-* flag; KIRO_TRUST=read limits a run to read-only tools.
+    local trust_args=()
+    case " $* " in
+      *" --trust-all-tools "*|*" -a "*|*" --trust-tools"*) ;;
+      *) if [ "${KIRO_TRUST:-all}" = "read" ]; then
+           trust_args=("--trust-tools=fs_read,glob")
+         else
+           trust_args=("--trust-all-tools")
+         fi ;;
+    esac
+
     local response
     local rc=0
     local err_file; err_file=$(mktemp)
     
-    response=$("$path" chat "$prompt" --no-interactive ${run_args[@]+"${run_args[@]}"} "$@" 2>"$err_file") || rc=$?
+    response=$("$path" chat "$prompt" --no-interactive ${trust_args[@]+"${trust_args[@]}"} ${run_args[@]+"${run_args[@]}"} "$@" 2>"$err_file") || rc=$?
     local err_msg; err_msg=$(cat "$err_file")
     rm -f "$err_file"
 
