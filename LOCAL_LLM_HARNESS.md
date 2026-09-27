@@ -1,107 +1,60 @@
 # Wiring local Qwen 3.8 into Claude Code
 
 How to use the locally-served Qwen 3.8 27B (LM Studio Splash or llama.cpp GGUF) as a
-working agent inside Claude Code. Qwen 3.6 35B A3B was removed on 2026-09-27; numbers
-below labelled "35B" are kept as historical measurements only. Every number and command below was measured or executed on this box
-(M5 Pro, 64 GB), not estimated.
+working agent inside Claude Code. Numbers below were measured on this box (M5 Pro,
+64 GB), not estimated.
 
-**Scope: Claude Code only.** Kiro and agy were evaluated and deliberately left
-out — see §0. They keep running on their own cloud models.
+**Scope: Claude Code only.** Kiro and agy keep running on their own cloud models — see §5.3.
 
 ---
 
-## 0. What exists — the whole inventory
-
-Six pieces were added. Nothing else changed, and **plain `claude` is untouched**.
-Kiro and agy have nothing installed at all.
+## 0. What exists
 
 | # | Thing | Type | What it's for |
 |---|---|---|---|
 | 1 | `llm-serve` | CLI | Start/stop/switch the model + proxy. Everything else assumes this is running. |
-| 2 | `llm-proxy.mjs` | background service | Translates Anthropic ⇄ OpenAI so **Claude Code** can run on local weights. Started automatically by `llm-serve`. |
+| 2 | `llm-proxy.mjs` | background service | Translates Anthropic ⇄ OpenAI so Claude Code can run on local weights. Started by `llm-serve`. |
 | 3 | `qwen` | CLI | One-shot prompt. Run it yourself, or from a Claude Code Bash call. |
-| 4 | `qwen-code` | CLI wrapper | Launches Claude Code pinned to a local model. What the `claude local ...` dispatcher branches call. |
-| 5 | `local-llm` plugin | Claude Code plugin | Bundles the `local-qwen` subagent + `local-llm` skill. **Never installed** — loaded per-session by #6. |
-| 6 | `claude-local-subagent` | CLI wrapper | Claude Code on your **Pro subscription**, with the local subagent available for that session only. |
-
-And what each harness actually got:
-
-| Harness | What it got | How you use it |
-|---|---|---|
-| **Claude Code** | Everything — proxy, opt-in subagent, CLI | `claude local qwen38_27`, or `claude subagent`, or run `qwen` yourself |
-| **Kiro** | **Nothing — removed** | n/a |
-| **agy** | **Nothing** | n/a |
-
-> **Deliberately Claude Code only.** An earlier revision registered an MCP server
-> (`ask_local_model`) with Kiro. That has been **removed** — `~/.kiro/settings/mcp.json`
-> is now `{"mcpServers": {}}`, and the MCP server script is deleted. agy never had
-> anything: it ignores `mcpServers` in its settings (tested directly) and its tool
-> list is fixed.
->
-> The local models are an experiment, and confining them to one harness keeps the
-> blast radius small. Kiro and agy do their real work on their own cloud models,
-> untouched.
+| 4 | `qwen-cli` | CLI | Interactive terminal chat (`llama-cli`, or `lms chat` for Splash). |
+| 5 | `qwen-code` | CLI wrapper | Claude Code pinned to the local model. What `claude local ...` calls. |
+| 6 | `local-llm` plugin | Claude Code plugin | The `local-qwen` subagent + `local-llm` skill. **Never installed** — loaded per-session by #7. |
+| 7 | `claude-local-subagent` | CLI wrapper | Claude Code on your **Pro subscription**, with the local subagent for that session only (`claude subagent`). |
 
 ### Everything here is opt-in
 
-This setup is for **deliberate experimentation**. It must never touch real work
-done on the Claude Pro subscription. Two layers enforce that.
+This setup is for deliberate experimentation and must never touch real work on the
+Pro subscription. Two layers enforce that.
 
-**Layer 1 — structural (Claude Code): the subagent doesn't exist unless you ask
-for it.** The `local-llm` plugin is installed to `~/.claude/local-plugins/`,
-which Claude Code does *not* read. It is **not** in `~/.claude/plugins/`,
-`~/.claude/agents/`, or `~/.claude/skills/`. `claude-local-subagent` loads it for
-one session with `--plugin-dir`. This is not a heuristic — the agent is absent
-from the session entirely.
-
-Verified by asking each to enumerate its own subagents:
+**Layer 1 — structural.** The `local-llm` plugin is staged in `~/.claude/local-plugins/`,
+which Claude Code does *not* read. `claude subagent` loads it for one session with
+`--plugin-dir`. Verified by asking each to enumerate its subagents:
 
 | Command | `local-qwen` present? |
 |---|---|
 | `claude` | **No** — `agy:runner, claude, Explore, general-purpose, kiro:runner, Plan, statusline-setup` |
 | `claude subagent` | **Yes** — same list plus `local-llm:local-qwen` |
 
-**Layer 2 — behavioural (inside a `claude subagent` session).** Once the
-plugin *is* loaded, the subagent's and skill's descriptions state that they fire
-**only when you name the local model in the request** ("ask qwen", "use the local
-model", "run this locally"), and that a task being bulky, repetitive, or cheaper
-to run locally is explicitly *not* a reason to route it there.
+**Layer 2 — behavioural.** Inside a `claude subagent` session, the subagent's and
+skill's descriptions state they fire **only when you name the local model** ("ask
+qwen", "use the local model", "run this locally"). A task being bulky or cheap is
+explicitly *not* a reason to route it there.
 
-The user-driven entry points (`qwen`, `qwen-code`, `claude local ...`) are inert
-until you run them, and plain `claude` never routes anywhere but Anthropic.
-
-Because Kiro and agy have no local integration at all, they need no guard.
+`qwen`, `qwen-code` and `claude local ...` are inert until you run them, and plain
+`claude` never routes anywhere but Anthropic.
 
 ---
 
 ## 1. The core problem, and why only Claude Code
 
-`llama-server` speaks the **OpenAI** chat-completions API. Claude Code speaks the
-**Anthropic Messages API**. Bridging those two is what unlocks everything else.
+Both local engines speak the **OpenAI** chat-completions API. Claude Code speaks the
+**Anthropic Messages API**, and is the only one of the three harnesses that can be
+pointed at an arbitrary endpoint (`ANTHROPIC_BASE_URL`). Two paths are used:
 
-| Harness | Talks | Can it point at a local endpoint? | Status |
-|---|---|---|---|
-| **Claude Code** | Anthropic Messages API | **Yes** — `ANTHROPIC_BASE_URL` | Fully integrated |
-| **Kiro** (`kiro-cli`) | Fixed cloud model list | No | **Not integrated** (removed) |
-| **Antigravity** (`agy`) | Fixed cloud model list | No | **Not integrated** |
+**A. Base-URL swap.** The proxy translates Anthropic ⇄ OpenAI, so Claude Code's entire
+toolset — Read, Edit, Write, Bash, Grep, subagents — runs on local weights.
 
-Claude Code is the only one of the three that can be pointed at an arbitrary
-endpoint, which makes it the only one where a local model gets *real agency*
-rather than being a question-answering sidecar. Two paths are used:
-
-**A. Base-URL swap.** A ~400-line shim translates Anthropic Messages ⇄ OpenAI,
-so Claude Code's *entire* toolset — Read, Edit, Write, Bash, Grep, subagents —
-runs on local weights.
-
-**B. Shell CLI.** `qwen` is a plain command, so it works from a Bash call inside
-any session (or straight from your terminal). This is the workhorse for bulk
-text work.
-
-Kiro and agy were both evaluated. Kiro supports MCP and briefly had an
-`ask_local_model` tool registered; it was removed to keep the experiment confined
-to one harness. agy never had anything — it **ignores** an `mcpServers` block in
-`~/.gemini/antigravity-cli/settings.json` (tested directly; the tool never
-appears in its 17-tool list) and cannot take a custom endpoint.
+**B. Shell CLI.** `qwen` is a plain command, so it works from a Bash call inside any
+session or straight from your terminal.
 
 ```
                  ┌─────────────────────────────────────────┐
@@ -110,13 +63,11 @@ appears in its 17-tool list) and cannot take a custom endpoint.
                  └─────────────────────────────────────────┘
                      ▲                          ▲
         OpenAI HTTP  │                          │ HTTP
-                     │                          │
         ┌────────────┴───┐            ┌─────────┴─────┐
         │  llm-proxy     │            │  qwen  (CLI)  │
         │  :8790         │            │  one-shot     │
-        │  Anthropic API │            │               │
-        └────────┬───────┘            └───────┬───────┘
-                 │                            │
+        │  Anthropic API │            └───────┬───────┘
+        └────────┬───────┘                    │
           ANTHROPIC_BASE_URL            your shell, or a
                  │                      Claude Code Bash call
           ┌──────┴───────────┐                 │
@@ -135,153 +86,99 @@ appears in its 17-tool list) and cannot take a custom endpoint.
 llm-serve start splash4    # loads Qwen 3.8 27B on Splash + proxy (~15 s)
 llm-serve status           # what's resident, and is it healthy
 
-qwen "explain this regex: ^\d{3}-\d{4}$"        # one-shot, ~1 s
+qwen "explain this regex: ^\d{3}-\d{4}$"
 git diff | qwen "write a conventional-commit message"
+qwen-cli splash4           # interactive terminal chat
 
-claude local qwen38_27 --bits 4   # interactive Claude Code, 100% local (Splash)
-claude local qwen38_27            # same model, 5-bit GGUF on llama.cpp
+claude local qwen38_27 --bits 4              # Claude Code, 100% local (Splash)
+claude local qwen38_27                       # same model, 5-bit GGUF on llama.cpp
+claude local qwen38_27 --think medium        # less reasoning, lower latency
+claude local                                 # whatever is already resident
 
 llm-serve stop             # frees the model
 ```
 
-`claude` on its own is untouched and still uses your **Claude Pro subscription**.
-No Anthropic env vars are exported globally — they are scoped inside the
-`qwen-code` process only. (See §10 if you ever see local traffic leak.)
+Plain `claude` still uses your Pro subscription. No Anthropic env vars are exported
+globally — they are scoped inside the `qwen-code` process (see §10 if local traffic
+ever leaks).
 
 ---
 
-## 3. Which model, and why
+## 3. Which model
 
-**Current answer (2026-09-27): Qwen 3.8 27B only.** `claude local qwen38_27 --bits 4`
-runs it on LM Studio Splash (fastest, warm follow-ups in 1–2 s); `--bits 5|6|8` runs a
-GGUF on llama.cpp. Only one model is resident, so `llm-serve start <alias>` **replaces**
-whatever is loaded, and the proxy survives the switch because it is model-agnostic.
+**Qwen 3.8 27B only.** `claude local qwen38_27 [--bits 4|5|6|8] [--think xhigh|medium|low]`
+(default `--bits 5`, `--think xhigh`):
 
-From `local_llm_bench` (`REPORT.md`), the 27B at Q8 with MTP on llama.cpp: 17.7 tok/s
-decode (draft-n=2, 68% accept), ~275 tok/s prompt processing, ~750 ms TTFT, judged
-quality **8.7 / 10**, 28.4 GB resident at 65k. These are **shallow-context** figures;
-prompt processing degrades sharply with depth, so budget deep prefill off the degraded
-rate — see §6 on the idle watchdogs.
+| `--bits` | Alias | Engine | Draft | Notes |
+|---|---|---|---|---|
+| 4 | `splash4` | LM Studio Splash, 4-bit + DFlash2 drafter | built in | fastest; deepest verified recall. Errors if LM Studio isn't installed. |
+| 5 | `gguf5` | llama.cpp UD-Q5_K_XL | MTP n=2 | default; safe to ~200k |
+| 6 | `gguf6` | llama.cpp UD-Q6_K_XL | MTP n=4 | |
+| 8 | `gguf8` | llama.cpp Q8_0 | MTP n=3 | silent OOM (empty turns) near ~156k real context |
 
-History: Qwen 3.6 35B A3B (MoE, 67 tok/s decode) was the default for agent loops until
-Splash made the 27B fast enough; it was removed on 2026-09-27.
+Only one model is resident; `llm-serve start <alias>` **replaces** whatever is loaded,
+and the proxy survives the switch because it is model-agnostic.
 
-**The 27B now serves from MLX, not llama.cpp** (changed 2026-08-15 after the Qwen
-3.8 quant sweep). Aliases `mlx8` / `mlx6` / `mlx4` launch `mlx_vlm.server`; `27b`
-remains the llama.cpp fallback. MLX beat llama.cpp at every matched size — 13.55 vs
-12.51 tok/s at 8-bit, 16.55 vs 10.40 at 6-bit — and matched its warm-cache TTFT
-(1.28 s vs 1.50 s), which is what makes the decode win actually count. On Qwen 3.6
-the same comparison went the other way because MLX re-prefilled the whole preamble
-every turn; on 3.8 its prompt cache engages.
+**Splash** (measured 2026-09-27, LM Studio 0.4.25, Splash runtime 0.0.5, real Claude
+Code sessions):
 
-**Update 2026-08-28 — 27B quant settled: `mlx4` only.** The vacation-run campaign
-(`local_llm_bench/results/vacation-run/`) upgraded the runtime to mlx-vlm 0.6.17
-(fixes a per-token Metal-handle leak on hybrid models) and tested every quant and
-drafter through real Claude Code sessions. Verdicts, all measured:
+- Warm follow-ups **1–2 s**; 97–99% of every prompt cached after the first request
+  (LM Studio log `Done · input N · cached M`), TTFT 0.4–0.9 s.
+- Decode 35–84 t/s; cold 16k-token prefill ~33 s (~480 tok/s).
+- Correct recall at **198,609 tokens** of context on the depth ladder (gguf5's best
+  was 158,766).
+- Loads 262,144 ctx in ~15 s. The weights are mapped from disk, so wired memory stays low.
+- `llm-serve` starts it with `lms server start --port 8089` + `lms load … --identifier
+  qwen-local`, so the proxy and `qwen` talk to it unchanged.
+- The downloaded model declares no reasoning capability, so LM Studio would drop
+  `reasoning_effort`. `llm-serve` installs a virtual model
+  (`dotfiles/lmstudio/qwen3.8-27b-splash/model.yaml` → `local/qwen3.8-27b-splash`)
+  that maps it onto the template variable, so `--think` works on Splash too.
 
-- **Quant: `mlx4`.** Not just fastest — the only quant that can hold a warm cache
-  safely on 64 GB. `mlx6`+APC kernel-panicked the machine
-  (`IOGPUMemory.cpp:550`, same assertion as the Aug 15/16 panics); the trigger is
-  APC's multi-GB snapshot clone near the GPU wired limit, and `mlx8` has even less
-  headroom. 8/6-bit warm-cache serving is disqualified on this machine.
-- **Drafter: MTP block=3.** The new DFlash2 drafter silently bypasses APC (0% warm,
-  turns 2–5× slower end-to-end); DSpark cannot load under 0.6.17 (upstream config
-  validator bug). MTP held 97% warm across a 12-turn session.
-- **Cache entries: 2.** `ENTRIES=1` gives a 0% hit rate (the single slot is always
-  the wrong entry); 2 is true latest-only plus the one live slot.
-- **Context cap: `qwen-code` now defaults `CLAUDE_CODE_MAX_CONTEXT_TOKENS=65536`**
-  (estimated tokens ≈ 35–45k real), because on mlx4 the snapshot-clone Metal OOMs
-  start at ~40–50k real ctx and are total by ~75k. 40960/49152 were tried and block
-  fresh sessions outright ("Prompt is too long" — the chars/3.5 estimate overshoots).
-- Measured on the adopted config: trivial warm turn **4 s**, substantive warm turns
-  37–82 s, warm prefill 0.9–9 s at 20–28k tokens, decode ~21–22 tok/s, zero panics
-  and zero Metal OOMs across the verification session.
-
-**Update 2026-09-27: `--bits 4` now means LM Studio Splash.** Inco AI's Splash engine
-(LM Studio, Metal, experimental) is tuned for exactly `incoai/Qwen3.8-27B-Splash`.
-That is a 4-bit target in its own fixed-layout format (14.1 GiB) plus a bundled
-DFlash2 drafter (1.2 GiB, 7 tokens per step); about 17.4 GB in total. It claims
-74 t/s short and 54 t/s at 32K on an M5 Pro. Alias `splash4`: `llm-serve` starts it
-with `lms server start --port 8089` + `lms load … --identifier qwen-local`, so the
-proxy and `qwen` talk to it unchanged. `claude local qwen38_27 --bits 4` picks it;
-`--engine gguf` keeps llama.cpp `gguf4`.
-
-Measured 2026-09-27 (LM Studio 0.4.25, Splash runtime 0.0.5) through a real 3-turn
-Claude Code session (Read → Edit → Bash, then two follow-ups):
-
-- Warm follow-ups **2 s and 1 s** wall. The LM Studio log (`~/.lmstudio/server-logs/`,
-  `Done · input N · cached M` lines) shows 97–99% of every prompt cached after the
-  first request, TTFT 0.4–0.9 s. Unlike DFlash2 on mlx_vlm, the cache holds.
-- Decode 50–84 t/s (about 3× gguf5). Cold 16k-token prefill: 33 s (~480 tok/s).
-- Loads 262144 ctx in ~15 s; wired memory stays low (~4.5 GB) because the weights
-  are mapped from disk. Depth ceiling is still untested (run the depth ladder).
-- **Effort caveat:** LM Studio does not forward `reasoning_effort` (neither top-level
-  nor `chat_template_kwargs`) to the template, so Splash always runs the template
-  default, which is `xhigh`. `--think low|medium` has no effect on `splash4`.
-- The LM Studio model key is `qwen3.8-27b-splash`, and the download needs the full HF
-  URL: `lms get https://huggingface.co/incoai/Qwen3.8-27B-Splash`.
-
-**Reasoning effort now defaults to `xhigh`** (was `medium`) for every model via
-`LLM_EFFORT` in `llm-serve`. `--think medium` / `LLM_EFFORT=medium` trims it per
-session.
+**Reasoning effort.** Qwen 3.8's template has exactly three levels: `xhigh` prepends a
+"think carefully" instruction, `low` a "keep it brief" one, `medium` nothing. Default
+is `xhigh` (`LLM_EFFORT`). `qwen-code` normalises `high`/`max`/`med`/`minimal` and
+restarts only the proxy when a running stack is at another level.
 
 ---
 
-## 4. The serving config — and why it differs from the benchmark's
+## 4. The llama.cpp serving config
 
-The benchmark serves at `-c 16384`, which is correct for benchmarking and
-**useless for a harness**: Claude Code's system prompt plus tool definitions
-alone measure **~23,000 tokens**, so a 16k window can't even hold the preamble.
-
-`llm-serve` serves at the model's full native **262,144** with a quantized KV
-cache and MTP speculative decoding:
+Claude Code's system prompt plus tool definitions alone measure **~23,000 tokens**, so
+`llm-serve` serves the model's full native **262,144** window:
 
 ```bash
 llama-server -m ~/Models/qwen3.8-27b-gguf/Qwen3.8-27B-UD-Q5_K_XL.gguf \
   --spec-type draft-mtp --spec-draft-n-max 2 \
-  -c 262144 -ngl 99 -fa on -np 1 \
+  -c 262144 -ngl 99 -fa on -np 1 --mlock \
+  --cache-ram 24576 --slot-save-path ~/.local/state/local-llm/kv \
   --jinja --reasoning-format deepseek --reasoning-budget -1 \
   --temp 1.0 --top-p 0.95 --top-k 20 \
-  -a qwen-local --host 127.0.0.1 --port 8089
+  -a qwen-local --host 127.0.0.1 --port 8089 --no-webui
 ```
 
-What each harness-specific flag buys you:
+- **`--spec-type draft-mtp --spec-draft-n-max N`** — MTP at the measured peak per
+  quant (2 for gguf5, 4 for gguf6, 3 for gguf8). `LLM_SPEC=0` disables it.
+- **`--mlock`** — without it macOS evicts model pages under pressure and prefill
+  collapses (196 → 4 tok/s measured). `LLM_MLOCK=0` opts out.
+- **`--cache-ram 24576`** — a saved prompt state costs ~103 KB/token on this hybrid
+  model; the 8 GiB default logs `exceeds cache size limit ... skipping` past ~79k tokens
+  and cold-reprefills. Host RAM, not GPU-wired. `LLM_CACHE_RAM_MIB` overrides.
+  (`--cache-reuse` is not used: it is a no-op on this hybrid architecture.)
+- **`--slot-save-path`** — only enables the `/slots` save/restore endpoints; nothing
+  calls them automatically.
+- **`--reasoning-budget -1`** — unlimited thinking; the proxy heartbeat (§6) keeps a
+  long reasoning phase from looking dead. `LLM_THINK_BUDGET` caps it.
+- **`-np 1`** — required by MTP. One request at a time: a Claude Code session and a
+  `qwen` call serialize.
+- **`-a qwen-local`** — a stable model name, so nothing changes when you swap GGUFs.
+- **`--reasoning-format deepseek`** — reasoning arrives in `reasoning_content`, not
+  inline `<think>` tags, so the proxy can handle it deliberately.
+- **`--jinja`** — required for tool calls.
 
-- **`-c 262144`** — the full trained window. Measured cost on the 35B: **37.7 GB
-  resident, only +1.4 GB over 65k.** These Qwen MoE models use very few KV
-  heads, so deep context is nearly free to *allocate*. (See the caveat below —
-  it is not free to *use*.)
-- **`-ctk q8_0 -ctv q8_0`** — quantizes the KV cache, which is what makes the
-  full window affordable at all.
-- **`--spec-type draft-mtp --spec-draft-n-max N`** — **yes, MTP is on**, at the
-  benchmarked peak depth per quant: **n=2 for gguf5** (68% accept, 1.80x), 3 for
-  gguf8, 4 for gguf6. `llm-serve` picks this per model;
-  you never pass it by hand.
-- **`--reasoning-budget -1`** — thinking is **unlimited**. The quality of these
-  models comes from letting them finish; the proxy's heartbeat (§6) is what stops
-  a long reasoning phase from looking like a dead connection.
-- **`-np 1`** — required by MTP. It also means **one request at a time**: the
-  server has a single slot, so a Claude Code session and a `qwen` call will
-  serialize, not parallelize. If a command seems to hang, check whether another
-  session is mid-generation.
-- **`-a qwen-local`** — a stable model alias, so harness config never changes
-  when you swap GGUFs underneath.
-- **`--reasoning-format deepseek`** — puts thinking in a separate
-  `reasoning_content` field instead of inline `<think>` tags, which is what lets
-  the proxy handle it deliberately rather than leaking tags into answers.
-
-### The 250K caveat: allocatable ≠ usable
-
-Memory is *not* the limit on deep context — throughput is. Prompt processing
-degrades badly as the prompt grows; measured on this machine, the rate decays
-steadily with depth (394 → 252 tok/s across a single 24k-token prefill). At that
-rate a **100k-token prompt costs roughly 7 minutes of prefill before a single
-token is generated**, and the full 262k window is hours.
-
-So the window is set to 262,144 because it costs almost nothing to reserve and
-removes any hard ceiling — but the *practical* working range on 64 GB is bounded
-by patience, not RAM. Treat anything past ~50k tokens as a batch job, not an
-interactive one. `LLM_CTX=65536 llm-serve restart` if you prefer a hard cap.
+**Allocatable ≠ usable.** Prefill throughput falls with depth, so a very deep cold
+prompt costs minutes before the first token. Keep sessions open (warm) rather than
+resuming big ones cold. `LLM_CTX=131072 llm-serve restart` sets a hard cap.
 
 ---
 
@@ -292,204 +189,98 @@ interactive one. `LLM_CTX=65536 llm-serve restart` if you prefer a hard cap.
 `qwen-code` sets the environment and execs `claude`:
 
 ```bash
-qwen-code                       # interactive
-qwen-code -p "fix the lint"     # headless
-qwen-code --model 27b -p "..."  # switch model first, then run
+qwen-code                          # interactive, on the resident model
+qwen-code -p "fix the lint"        # headless
+qwen-code --model gguf6 -p "..."   # switch model first, then run
 ```
-
-The environment that makes it work, and why each var is needed:
 
 | Variable | Why |
 |---|---|
 | `ANTHROPIC_BASE_URL=http://127.0.0.1:8790` | points Claude Code at the proxy |
 | `ANTHROPIC_AUTH_TOKEN=local` | any non-empty value; the proxy ignores it |
-| `ANTHROPIC_MODEL=qwen-local` | main model |
-| `ANTHROPIC_SMALL_FAST_MODEL` / `ANTHROPIC_DEFAULT_HAIKU_MODEL` | background chores (titles, summaries) would otherwise try to reach the real Haiku |
-| `CLAUDE_CODE_MAX_CONTEXT_TOKENS=65536` | **essential.** Claude Code doesn't recognise `qwen-local` and otherwise assumes a 200k window, so auto-compact fires far too late and the server truncates mid-task |
-| `MAX_THINKING_TOKENS=0` | stops the harness requesting extended thinking it can't get |
+| `ANTHROPIC_MODEL` / `ANTHROPIC_SMALL_FAST_MODEL` / `ANTHROPIC_DEFAULT_HAIKU_MODEL` = `qwen-local` | background chores would otherwise try to reach the real Haiku |
+| `CLAUDE_CODE_MAX_CONTEXT_TOKENS=262144` (`LLM_CTX`) | Claude Code doesn't recognise `qwen-local` and would assume 200k. These are *estimated* tokens (chars/3.5); below 65536 blocks fresh sessions |
+| `MAX_THINKING_TOKENS=0` | stops the harness requesting Anthropic extended thinking; the model still reasons |
 | `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` | keeps an offline session offline |
-| `unset ANTHROPIC_API_KEY` | an API key would take precedence over the auth token and send real traffic to Anthropic |
+| `API_TIMEOUT_MS`, `CLAUDE_STREAM_IDLE_TIMEOUT_MS`, `CLAUDE_BYTE_STREAM_IDLE_TIMEOUT_MS` = 1800000 | long prefills (§6) |
+| `unset ANTHROPIC_API_KEY` | an API key would take precedence and send real traffic to Anthropic |
 
-**Measured behaviour** (35B A3B, Q8, 65k ctx):
-
-- read a file and answer one question — **49 s**
-- fix a bug, write a test file, run it with `python3` (3 tool round-trips) —
-  **1 m 51 s**, correct on the first attempt
-
-That is genuinely usable for background chores and offline work. It is not a
-substitute for Opus on anything hard.
+Good for background chores and offline work; not a substitute for Opus on anything hard.
 
 ### 5.2 Claude Code — the `local-qwen` subagent
 
-Installed at `~/.claude/agents/local-qwen.md`. Delegate with
-`subagent_type: "local-qwen"` when the local model's output is bulky and only the
-conclusion matters — it keeps that output out of the parent context, exactly like
-`agy:runner` and `kiro:runner`.
+Available only in `claude subagent` sessions (§0). Delegate with
+`subagent_type: "local-qwen"` when you asked for the local model and its output is
+bulky enough that only the conclusion matters.
 
 ### 5.3 Kiro and agy — deliberately not integrated
 
-Neither has any local-model integration, by choice.
-
-**Kiro** supports MCP, and an earlier revision registered an `ask_local_model`
-tool with it (verified working, 1.96 s round-trip). It has since been
-**removed**: `~/.kiro/settings/mcp.json` is now `{"mcpServers": {}}` and the MCP
-server script is deleted. Confirmed by asking Kiro to use it — it replies that it
-has no such tool and answers from its own model.
-
-**agy** never had anything. It ignores `mcpServers` in its settings (tested — the
-tool never appears in its tool list) and its model list is cloud-only.
-
-Both keep doing their real work on their own cloud models. If you ever want a
-local answer inside one of them, run `qwen` yourself and paste the result; there
-is no wiring to re-enable.
+**Kiro** supports MCP and briefly had an `ask_local_model` tool; it was removed to keep
+the experiment confined to one harness (`~/.kiro/settings/mcp.json` is
+`{"mcpServers": {}}`). **agy** ignores `mcpServers` in its settings (tested) and cannot
+take a custom endpoint. To use a local answer in either, run `qwen` yourself.
 
 ---
 
 ## 6. Thinking, and the dead-connection failure it causes
 
-Both models are reasoning models and, left alone, spend **~4,000–5,500 tokens
-thinking** before answering. Thinking is left **on** in the agent path — it is
-where these models' quality comes from — but it has a sharp operational edge.
+The harness prompt is ~23k tokens and the model reasons on every turn, so a request
+can go minutes without a visible token. A silent SSE stream looks dead to Claude Code
+(`Waiting for API response · will retry…`).
 
-### The failure
+**SSE heartbeats.** The proxy emits `event: ping` every 5 s (`PING_INTERVAL_MS`)
+whenever upstream is silent.
 
-Firing up `claude local qwen38_27` produced:
-
-```
-✻ Waiting for API response · will retry in 4m 33s · check your network
-```
-
-Nothing was wrong with the network. Three things compounded:
-
-1. The harness prompt is **~23k tokens**, and the 27B prefills at only ~300 tok/s
-   → **~85 s before the first token is even generated**.
-2. Thinking was unlimited at 17.7 tok/s → **minutes more** before any *answer*.
-3. `--reasoning-format deepseek` puts that reasoning in `reasoning_content`,
-   which the proxy deliberately does not forward — so it emitted `message_start`
-   and then **nothing at all for over five minutes**. Claude Code correctly
-   concluded the stream was dead and retried.
-
-Measured directly: response headers arrive at **0.16 s**, but the first SSE byte
-only at **12.19 s** on a small prompt — the silence starts immediately and grows
-with prompt size.
-
-### The fix: SSE heartbeats
-
-The proxy now emits `event: ping` every 5 s whenever the upstream has been
-silent, for the entire life of the request. The harness sees a live connection
-through both prefill and reasoning. `qwen-code` also sets
-`API_TIMEOUT_MS=1800000` as a backstop.
-
-#### Heartbeats are not sufficient on their own
-
-Pings keep the *socket* alive but do not count as *chunks*, and Claude Code runs
-two independent watchdogs:
+**Heartbeats alone are not enough.** Claude Code runs two watchdogs:
 
 | Watchdog | Env var | Default | Counts |
 | --- | --- | --- | --- |
-| byte | `CLAUDE_BYTE_STREAM_IDLE_TIMEOUT_MS` | 180 s (first-party) | raw bytes — pings satisfy this |
+| byte | `CLAUDE_BYTE_STREAM_IDLE_TIMEOUT_MS` | 180 s | raw bytes — pings satisfy this |
 | chunk | `CLAUDE_STREAM_IDLE_TIMEOUT_MS` | 300 s | content blocks — pings do **not** |
 
-`API_TIMEOUT_MS` bounds the whole request and never binds first. So a prefill
-longer than 5 minutes still dies with `Stream idle timeout - no chunks
-received`, heartbeat notwithstanding — the CLI throws exactly that when the
-chunk watchdog trips with zero content blocks yielded.
+A prefill longer than 5 min therefore dies with `Stream idle timeout - no chunks
+received` (measured trigger: a 141k-token resume prefilling for 660 s). `qwen-code`
+sets both to 1800000. The chunk var is a floor (`max(env, 300000)`), and 1800000 is the
+byte watchdog's hard ceiling.
 
-Observed on the 35B A3B: a resumed 141k-token session measured
+**Visible reasoning.** `llm-serve` starts the proxy with `THINK_VIEW=native`: reasoning
+is emitted as real Anthropic `thinking` blocks and Claude Code renders them. Their
+signature is fake, but nothing validates it — the proxy *is* the server, and the
+harness only round-trips the block back, where it is dropped.
+`THINK_VIEW=off|status|text` for none, a compact heartbeat, or inline text.
+`PROXY_THINK=0` disables reasoning entirely.
 
-```
-prompt eval time = 659681.54 ms / 141540 tokens (4.66 ms/tok, 214.56 tok/s)
-```
+**Per-request switch.** `chat_template_kwargs: {"enable_thinking": false}` cuts output
+~20x (289 → 14 tokens, same prompt). So:
 
-660 s of prefill against a 300 s chunk watchdog. Note the 214 tok/s versus the
-~910 tok/s headline figure above: prefill throughput degrades sharply with
-context depth, so deep-context resumes are several times slower per token than
-the shallow benchmark suggests.
+- **Agent path (`qwen-code`):** thinking on.
+- **Bulk path (`qwen` CLI):** thinking off by default; `--think` opts in
+  (`--effort xhigh|medium|low`).
 
-`qwen-code` therefore also sets both idle vars to 1800000. Two caveats:
-`CLAUDE_STREAM_IDLE_TIMEOUT_MS` is a floor — `max(env, 300000)` — so it can only
-be raised above 5 min, never lowered; and 1800000 is the byte watchdog's hard
-ceiling, so that is the most that can be bought.
-
-This only stops the crash. You still wait out the prefill, which is why
-`--cache-reuse 256` matters more in practice: it salvages matching chunks via KV
-shifting instead of all-or-nothing prefix matching, so a changed system prompt
-at position 0 no longer invalidates everything behind it. `--slot-save-path`
-merely *enables* the `/slots/{id}?action=save|restore` endpoints — llama.cpp
-does not persist or reload slots on its own, so nothing uses them until
-something calls them.
-
-A second, subtler failure this also explains: with a small `max_tokens`, thinking
-can consume the **entire budget and return zero content** — a request capped at
-64 tokens produced 64 thinking tokens and an empty answer.
-
-### The per-request switch
-
-Thinking is controlled by `chat_template_kwargs: {"enable_thinking": false}`, and
-the effect on cost is dramatic — same prompt, measured here:
-
-| | tokens generated |
-|---|---|
-| thinking on | 289 |
-| thinking off | **14** |
-
-That ~20x gap is why the split is deliberate:
-
-- **Agent path (`qwen-code`, Claude Code):** thinking **on**. Quality matters,
-  and the heartbeat covers the latency. `PROXY_THINK=0` to disable.
-- **Bulk path (`qwen` CLI):** thinking **off** by default, since summarising and
-  drafting gain nothing from it. `--think` opts in per call.
-
-```bash
-qwen "summarise this log" -f app.log                    # off — bulk work
-qwen --think "why would this deadlock?" -f worker.go    # on — real analysis
-```
-
-> `MAX_THINKING_TOKENS=0` in `qwen-code` controls the **harness**, not the model
-> — it stops Claude Code requesting Anthropic-style thinking blocks it can't get.
-> The local model still reasons normally.
+With a small `max_tokens`, thinking can consume the whole budget and return an empty answer.
 
 ---
 
 ## 7. Web search and fetch
 
-There are two different web-tool mechanisms in play, and only one of them is
-what Claude Code actually uses. Capturing a real request (`DUMP_DIR`) settles
-it — the binary contains `web_search_20260209` strings, but the harness sends:
+Claude Code sends its own client-side tools:
 
 ```
-WebSearch   { query, allowed_domains?, blocked_domains? }   <- client-side, has input_schema
-WebFetch    { url, prompt }                                 <- client-side, has input_schema
+WebSearch   { query, allowed_domains?, blocked_domains? }
+WebFetch    { url, prompt }
 ```
 
-Both are **client-side tools the harness runs itself**, not the API's
-server-side `web_search`. That distinction decides everything:
+- **`WebFetch` works as-is** — the harness fetches directly and summarises with the
+  configured small model, which is the local one.
+- **`WebSearch` does not** — it reaches Anthropic for the actual search, so against a
+  local endpoint it returns `Did 0 searches`.
 
-- **`WebFetch` works as-is.** It fetches directly and summarises the page with
-  whatever small model is configured — which is the local one. Leave it alone.
-- **`WebSearch` does not.** Its implementation reaches Anthropic for the actual
-  search, so against a local endpoint it returns `Did 0 searches`. The call
-  looks like it ran; it just finds nothing.
-
-So the proxy intercepts `WebSearch` **by name** (`PROXY_HARNESS_TOOLS`,
-default `WebSearch`) and runs it here, forwarding the harness's own schema
-untouched so the model sees exactly the tool it expects. `WebFetch` is
-deliberately not in that list.
-
-The server-side path below is also handled, for any harness that does use it:
-
-```
-model emits   web_search{query}      ← intercepted here; never reaches the harness
-proxy runs    the search
-proxy appends assistant tool_call + tool result to the conversation
-proxy re-prompts the model, streaming the next round into the SAME message
-```
-
-The harness sees one continuous reply and never learns a search happened —
-which is exactly how the server-side tools behave against the real API. Since a
-round can end in either kind of tool call, tool calls are buffered until the
-round ends; only then can the proxy tell which are its own to run and which
-belong to the harness.
+So the proxy intercepts `WebSearch` **by name** (`PROXY_HARNESS_TOOLS`, default
+`WebSearch`), runs the search itself, forwards the harness's own schema untouched, and
+re-prompts the model with the results inside the same Anthropic message. Anthropic
+*server-side* tools (`web_search_2026…`, `web_fetch_…`) are handled the same way for any
+harness that sends them. Tool calls are buffered until a round ends so the proxy can
+tell which are its own to run.
 
 | Env | Default | What |
 |---|---|---|
@@ -499,149 +290,95 @@ belong to the harness.
 | `SEARXNG_URL` | — | required for `SEARCH_BACKEND=searxng` |
 | `SEARCH_RESULTS` | 8 | results per search |
 | `FETCH_MAX_CHARS` | 20000 | cap on a fetched page |
-| `MAX_PROXY_HOPS` | 4 | search→answer rounds per turn; afterwards the tools are withdrawn so the model must answer |
+| `MAX_PROXY_HOPS` | 4 | search→answer rounds per turn; then the tools are withdrawn so the model must answer |
 
-The default backend scrapes DuckDuckGo's HTML endpoint: no key, so it works on a
-fresh machine with nothing configured. It is scraped HTML though, so it can
-rate-limit or change shape. Switch backends without reloading the model:
+DuckDuckGo is scraped HTML and can rate-limit. Switch without reloading the model:
 
 ```bash
 SEARCH_BACKEND=brave BRAVE_API_KEY=... llm-serve restart-proxy
 ```
 
-Server-side tools the proxy *can't* stand in for (code execution, computer use)
-are dropped rather than forwarded — offering the model a tool that nothing will
-ever execute just produces dead tool calls.
+Server-side tools with no local stand-in (code execution, computer use) are dropped
+rather than offered.
 
 ---
 
-## 8. Concurrency: why not vLLM?
+## 8. Other proxy behaviour
 
-`-np 1` means one request at a time, so a `qwen` call fires while a `qwen-code`
-session is mid-turn will queue behind it. The obvious thought is vLLM for real
-batching. On this hardware, don't.
-
-**The trade is concurrency *or* MTP — on either engine.** llama.cpp requires a
-single slot for MTP speculative decoding, so `-np 2` costs you the same 1.21x
-(35B) to 1.80x (27B) speedup that vLLM's lack of MTP support costs you. There is
-no configuration here that gives both.
-
-vLLM specifically is the weaker side of that trade on an M5 Pro:
-
-- It is **CUDA-first**. Apple Silicon support is experimental, and there is no
-  Metal paged-attention path competitive with llama.cpp's Metal backend.
-- **No MTP for these GGUFs**, which is exactly what you measured — slower at
-  concurrency 1, because you pay the engine's overhead and forfeit the speedup.
-- vLLM's advantage is *aggregate throughput under many concurrent requests*. With
-  one human at the keyboard, you are optimising the wrong number: continuous
-  batching improves tokens/sec across N streams, not latency of the one stream
-  you're waiting on.
-
-**So keep llama.cpp + MTP and let requests queue.** If you genuinely need two
-things at once, the better lever is a *second llama-server on another port* with
-a small model for the bulk path — but RAM is the binding constraint here: the two
-Q8 Qwens are 29 GB + 38 GB and cannot co-reside in 64 GB. A small side model
-(3–8B) alongside the 27B is the only combination that fits.
-
-Revisit vLLM if you move to an NVIDIA box, where batching and MTP-style
-speculators are both first-class.
+- **Volatile-prompt stripping.** The hybrid model cannot reuse a partial prefix, so one
+  changed byte in the system prompt forces a full re-prefill. The proxy strips Claude
+  Code's per-turn `<total_tokens>` notes and the periodic "task tools haven't been used
+  recently" nudge.
+- **System hoisting.** Qwen 3.8's template rejects a system message after index 0, so
+  all system content is merged into one leading message.
+- **Images** are replaced with a note (the proxy is text-only).
+- **`count_tokens`** is approximated (chars ÷ 3.5); it only drives compaction timing.
+- **Debugging:** `DEBUG=1` logs each translated request; `DUMP_DIR=<dir>` writes them to
+  files so you can diff consecutive payloads to see what broke the cache.
+- `/health` reports the proxy's `effort`, which is how `qwen-code` and `llm-serve status`
+  know the current `--think` level.
 
 ---
 
-## 9. What to actually send local
+## 9. Concurrency: why not vLLM?
 
-The local models are free, private, and unmetered but slow. Route by whether
-volume matters more than peak reasoning.
-
-**Send local:** summarising files, logs, and diffs · docstrings and comments ·
-changelogs and commit messages · explaining unfamiliar code or regexes ·
-triaging search hits ("which of these 40 matches are relevant?") · first-draft
-boilerplate · anything you'd otherwise skim yourself.
-
-**Keep on Opus:** architecture and API design · security- and
-data-integrity-critical logic · multi-file refactors · debugging anything subtle
-· reviewing whatever the local model produced.
-
-The honest test: delegate when the *prompt* is shorter than the *output*, and
-when being wrong is cheap to detect.
+`-np 1` means requests queue. On this hardware the trade is concurrency *or* MTP:
+llama.cpp needs a single slot for MTP, and vLLM is CUDA-first with no MTP for these
+GGUFs, so it is slower at concurrency 1. With one user at the keyboard, keep MTP and
+let requests queue. Revisit on an NVIDIA box.
 
 ---
 
-## 10. Troubleshooting
+## 10. What to send local
+
+**Send local:** summarising files, logs and diffs · docstrings and commit messages ·
+explaining unfamiliar code · triaging search hits · first-draft boilerplate.
+
+**Keep on Opus:** architecture and API design · security- and data-critical logic ·
+multi-file refactors · subtle debugging · reviewing whatever the local model produced.
+
+Delegate when the *prompt* is shorter than the *output*, and when being wrong is cheap
+to detect.
+
+---
+
+## 11. Troubleshooting
 
 | Symptom | Cause / fix |
 |---|---|
 | `cannot reach llama-server` | `llm-serve start` |
-| Claude Code warns *"qwen-local is not a model this version recognizes"* | Harmless, but set `CLAUDE_CODE_MAX_CONTEXT_TOKENS` or it assumes 200k. `qwen-code` already does. |
-| Plain `claude` starts using the local model | Something exported `ANTHROPIC_BASE_URL` globally. Check `env \| grep ANTHROPIC` — `~/.zshrc` has two *commented-out* lines near the top from an old experiment; leave them commented. |
-| Everything serializes / second request hangs | `-np 1` is a hard requirement of MTP — one slot, one request at a time. |
-| Truncated or confused long sessions | Context exhaustion. Raise `-c` (`LLM_CTX=131072 llm-serve restart`) and match `CLAUDE_CODE_MAX_CONTEXT_TOKENS`. |
-| Answers are slow but fine | Thinking is on. Drop `--think`. |
-| Switching models seems to hang | It's reading 28–38 GB from disk. Cold start ~40 s; `llm-serve logs` to watch. |
+| `claude local qwen38_27 --bits 4` says Splash is not installed | Install LM Studio and the Splash runtime + model (README §5.0), or use `--bits 5\|6\|8`. |
+| `model not downloaded: incoai/Qwen3.8-27B-Splash` | `lms get https://huggingface.co/incoai/Qwen3.8-27B-Splash` — the bare name hits LM Studio Hub. |
+| Plain `claude` starts using the local model | Something exported `ANTHROPIC_BASE_URL` globally. Check `env \| grep ANTHROPIC`. |
+| Everything serializes / second request hangs | `-np 1` — one slot. Look for a stray headless client: `ps -eo pid,etime,command \| grep "claude -p"`. |
+| Empty turns deep into a gguf8 session | Silent OOM near ~156k context. Use gguf5 or splash4 for deep sessions; grep the server log for `kIOGPUCommandBufferCallbackErrorOutOfMemory`. |
+| Switching models seems to hang | It's reading the weights from disk. `llm-serve logs` to watch. |
 | Tool calls never fire | `--jinja` missing — without it the chat template can't emit tool calls. |
-| `couldn't bind HTTP server socket` when switching models | The proxy's keep-alive connections to the old llama-server linger in `TIME_WAIT` on `:8089`, and llama-server binds with `SO_REUSEPORT` (not `SO_REUSEADDR`), so it cannot rebind over them. `llm-serve` now stops the proxy *before* the server and waits for the port to clear; if you hit this driving llama-server by hand, wait ~30 s. |
-| `Did 0 searches` in the WebSearch tool output | The harness ran its *own* WebSearch, which needs Anthropic to do the searching. The proxy must intercept it by name instead — see §7. Confirm with `llm-serve logs proxy`: a `WebSearch {"query":...}` line means we ran it, no line means the call went to the harness. A line plus `ERROR:` means the backend failed, and DuckDuckGo rate-limits, so switch `SEARCH_BACKEND`. |
-| `status` says stopped but something is clearly serving :8089 | A `start` interrupted partway (Ctrl-C while the model loads) leaves a live daemon and no pidfile. `llm-serve` now reconciles on every command: it adopts whatever is listening on the two ports and recovers the model name from the server's own `-m` argument, so `status`, `stop` and `start` all behave. Nothing to do by hand. |
-| `Unable to connect to API (ConnectionRefused)` mid-session | The proxy died. It used to inherit the process group of whatever shell started it, so a Ctrl-C, a closed terminal or a script killed on timeout took it down — `nohup` only covers SIGHUP. `llm-serve` now starts both daemons via `detach()`, which puts them in their own session; verify with `ps -o pid,pgid -p $(cat ~/.local/state/local-llm/proxy.pid)` — pid should equal pgid. `llm-serve restart-proxy` brings it back without touching the model. |
-| A turn takes *minutes*, and `llm-serve logs` shows prefill at single-digit tok/s | Memory pressure. A 27–38 GB model on a 64 GB machine leaves little headroom, and macOS compresses or evicts model pages whenever Spotlight, `contactsd` and friends get busy. Generation barely notices (it is bandwidth-light per token) but prefill sweeps every weight per batch, so it falls off a cliff — measured on an *idle* server: 196 → 4 tok/s. `llm-serve` now passes `--mlock` to pin the weights; the same run then held 79 tok/s. `LLM_MLOCK=0` opts out. |
-| The first turn of every session re-prefills ~20k tokens | Expected, and not fixable from here. The stable prefix (system prompt + tool schemas) is ~16.6k tokens, but the harness appends a static agent/skills catalog *after* your prompt — so a new prompt invalidates everything from that point on. Qwen 3.6 needs a context checkpoint at or below the divergence to restore, and checkpoints only ever exist above it, so llama.cpp re-processes the lot. Within a session it is fine: turn 2 onwards appends to a matching prefix and comes back in ~2 s. Keep sessions open rather than restarting them. |
-| `API Error: Stream idle timeout - no chunks received` when resuming a big session | The SSE heartbeat is working and is not the problem. Claude Code runs two watchdogs and a ping only satisfies one: the byte watchdog (`CLAUDE_BYTE_STREAM_IDLE_TIMEOUT_MS`, 180 s) counts raw bytes, the chunk watchdog (`CLAUDE_STREAM_IDLE_TIMEOUT_MS`, 300 s) counts content blocks. A ping is bytes, not a chunk, so any prefill over 5 min dies regardless. `API_TIMEOUT_MS` bounds the whole request and never binds first. `qwen-code` now sets both idle vars to 1800000 — note the chunk one is a floor, `max(env, 300000)`, so it can only be raised, and 1800000 is the byte watchdog's hard ceiling. Measured trigger: a 141k-token resume prefilled 660 s at 214 tok/s. See §6. |
-| Two sessions at once, or a stray `claude -p` left running | Fatal to latency. `-np 1` means one slot, so a forgotten headless client interleaves with your real request and both crawl. `ps -eo pid,etime,command \| grep "claude -p"` finds them. |
+| `couldn't bind HTTP server socket` when switching | Lingering `TIME_WAIT` on `:8089`; llama-server binds with `SO_REUSEPORT`, not `SO_REUSEADDR`. `llm-serve` stops the proxy first and waits for the port; by hand, wait ~30 s. |
+| `Did 0 searches` from WebSearch | The harness ran its own WebSearch. `llm-serve logs proxy`: a `WebSearch {"query":...}` line means the proxy ran it; a line plus `ERROR:` means the backend failed — switch `SEARCH_BACKEND`. |
+| `status` says stopped but something serves :8089 | An interrupted `start` left a daemon without a pidfile. `llm-serve` adopts listeners on both ports and recovers the model from argv on every command. |
+| `Unable to connect to API (ConnectionRefused)` mid-session | The proxy died. Daemons run in their own session (`detach()`); check `ps -o pid,pgid -p $(cat ~/.local/state/local-llm/proxy.pid)` (pid should equal pgid). `llm-serve restart-proxy` brings it back without touching the model. |
+| Prefill at single-digit tok/s | Memory pressure evicting model pages; `--mlock` should be on (don't set `LLM_MLOCK=0`). |
+| First turn of every session re-prefills ~20k tokens | Expected. The harness appends a static catalog after your prompt, and the hybrid model can't restore a partial prefix. Turn 2 onwards is warm; keep sessions open. |
+| `Stream idle timeout - no chunks received` on a big resume | The chunk watchdog (§6). `qwen-code` already sets 1800000; beyond that, the prefill is simply too long — keep sessions warm instead of resuming cold. |
+| `--think low` seems ignored on Splash | The LM Studio virtual model is missing or stale. `llm-serve restart splash4` reinstalls it. (`qwen-cli splash4` via `lms chat` always uses the model default.) |
 
 ---
 
-## 11. What's installed where
+## 12. What's installed where
 
 | Path | What |
 |---|---|
 | `~/.local/bin/llm-serve` | start/stop/switch/status for the whole stack |
-| `~/.local/bin/llm-proxy.mjs` | Anthropic ⇄ OpenAI translation shim (port 8790) |
-| `~/.local/bin/qwen` | one-shot CLI — the universal integration |
-| `~/.local/bin/qwen-code` | Claude Code pinned to a local model |
+| `~/.local/bin/llm-proxy.mjs` | Anthropic ⇄ OpenAI shim (port 8790) |
+| `~/.local/bin/qwen` | one-shot CLI |
+| `~/.local/bin/qwen-cli` | interactive terminal chat |
+| `~/.local/bin/qwen-code` | Claude Code pinned to the local model |
 | `~/.local/bin/claude-local-subagent` | Claude Code + the opt-in local subagent |
-| `~/.claude/local-plugins/local-llm/` | the opt-in plugin (subagent + skill). **Not** read by a plain `claude` |
+| `~/.claude/local-plugins/local-llm/` | the opt-in plugin. **Not** read by a plain `claude` |
+| `~/.lmstudio/hub/models/local/qwen3.8-27b-splash/` | Splash virtual model, installed by `llm-serve start splash4` |
 | `~/.local/state/local-llm/` | pidfiles, `current`, logs |
-| `~/.local/state/local-llm/kv/` | `--slot-save-path` target. Created on start; stays empty unless something calls the `/slots` save/restore endpoints |
+| `~/.local/state/local-llm/kv/` | `--slot-save-path` target; stays empty unless something calls `/slots` |
 
-All of it is reproducible on a new machine with `./setup.sh` from this repo.
-
----
-
-## 12. Known limits
-
-- **Text only.** Neither model has vision; the proxy replaces image blocks with
-  a note rather than failing.
-- **Thinking is always on, and now visible.** The model reasons on every turn
-  (`--reasoning-budget -1`); `MAX_THINKING_TOKENS=0` in `qwen-code` does *not*
-  change that — it governs Anthropic-style extended thinking, while Qwen's
-  reasoning comes from its own chat template. The proxy emits real Anthropic
-  `thinking` blocks (`THINK_VIEW=native`, the default `llm-serve` sets), so
-  Claude Code renders the reasoning phase in its own UI rather than going quiet.
-  The signature those blocks carry is Anthropic's proof the reasoning is
-  unmodified; nothing validates it here, because the proxy *is* the server, and
-  the harness only round-trips it back to us where it is dropped. Verified end
-  to end. `THINK_VIEW=off|status|text` for no display, a compact heartbeat, or
-  the full chain of thought inline.
-- **One request at a time**, per `-np 1` above.
-- **Prompt caching doesn't apply.** There's no cross-request discount to exploit
-  like the Anthropic API has; llama-server does keep a local prefix cache, which
-  is why repeated turns in one session prefill faster. `--cache-reuse 256`
-  softens the all-or-nothing edge of that cache by shifting matching KV chunks
-  rather than discarding everything past the first divergent token, but it does
-  not survive a server restart — the cache is in RAM, and a `llm-serve restart`
-  or `start <other-model>` starts cold.
-- **`count_tokens` is approximated** (chars ÷ 3.5). It only drives compaction
-  timing, so an approximation is fine.
-- **Web search is best-effort.** The proxy stands in for Anthropic's server-side
-  search (§7), but the default backend scrapes DuckDuckGo without an API key and
-  can rate-limit. Set `SEARCH_BACKEND=brave` or `searxng` for something durable.
-- **Server-side tools other than web search and fetch are dropped** — code
-  execution and computer use have no local stand-in.
-- **Cross-session prompt caching does not work**, for the structural reason in
-  §10: the harness puts a static ~2.5k-token catalog *after* the varying user
-  prompt, and the model's attention makes a partial-prefix restore impossible.
-  Budget one full prefill per session; everything after that is cached.
-- **The 27B is prefill-bound, not generation-bound.** ~20k tokens of harness
-  prompt at ~275 tok/s on an unloaded machine is ~75 s before the first token.
-  Splash (`--bits 4`) prefills ~2x faster (~350–480 tok/s) and keeps follow-ups
-  warm — pick it when start-up latency matters.
+The `~/.local/bin` entries are symlinks into this repo. Reproducible on a new machine
+with `./setup.sh`.

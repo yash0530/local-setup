@@ -1,26 +1,21 @@
 #!/usr/bin/env bash
-# qwen-cli [gguf4|gguf5|gguf6|gguf8|splash4] [--think low|medium|xhigh]
+# qwen-cli [gguf5|gguf6|gguf8|splash4] [--think low|medium|xhigh]
 #
-# Native llama.cpp interactive chat (llama-cli) on a local Qwen quant, with MTP
-# speculative decoding and the stack's sampling config. Type prompts; llama.cpp prints
-# prompt-eval (prefill) and eval (decode) tok/s after each reply, so it doubles as a
-# per-quant speed probe. Default quant: gguf5. Default thinking: xhigh (or $LLM_EFFORT).
+# Interactive terminal chat on a local Qwen 3.8 27B. gguf* run llama-cli with MTP and the
+# stack's sampling; it prints prefill/decode tok/s after each reply. Default gguf5,
+# thinking xhigh (or $LLM_EFFORT). splash4 brings the model up in LM Studio and opens
+# `lms chat` instead (llama-cli cannot load Splash weights).
 #
-# splash4 is different: llama-cli cannot load Splash weights, so it brings the model up
-# in LM Studio (`llm-serve start splash4`) and drops you into `lms chat` instead. The
-# LM Studio app's Chat tab is the UI equivalent.
-#
-# One model fits in 64 GB at a time, so this STOPS the llm-serve background server first
-# if it's running (they'd otherwise fight for the GPU/RAM). Restart it afterwards with
-# `llm-serve start`.  Ctrl-C to quit the chat.
+# One model fits in 64 GB, so the gguf path stops the llm-serve server first.
+# Restart it afterwards with `llm-serve start`. Ctrl-C to quit.
 set -euo pipefail
 
 Q=gguf5; THINK="${LLM_EFFORT:-xhigh}"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --think) THINK="${2:-}"; shift 2 ;;
-    gguf4|gguf5|gguf6|gguf8|splash4) Q="$1"; shift ;;
-    -h|--help) echo "usage: qwen-cli [gguf4|gguf5|gguf6|gguf8|splash4] [--think low|medium|xhigh]"; exit 0 ;;
+    gguf5|gguf6|gguf8|splash4) Q="$1"; shift ;;
+    -h|--help) echo "usage: qwen-cli [gguf5|gguf6|gguf8|splash4] [--think low|medium|xhigh]"; exit 0 ;;
     *) echo "qwen-cli: unknown arg '$1'" >&2; exit 1 ;;
   esac
 done
@@ -33,7 +28,6 @@ if [[ "$Q" == "splash4" ]]; then
 fi
 
 case "$Q" in
-  gguf4) M=~/Models/qwen3.8-27b-gguf/Qwen3.8-27B-UD-Q4_K_XL.gguf; N=2; T=1.0 ;;
   gguf5) M=~/Models/qwen3.8-27b-gguf/Qwen3.8-27B-UD-Q5_K_XL.gguf; N=2; T=1.0 ;;
   gguf6) M=~/Models/qwen3.8-27b-gguf/Qwen3.8-27B-UD-Q6_K_XL.gguf; N=2; T=1.0 ;;
   gguf8) M=~/Models/qwen3.8-27b-gguf/Qwen3.8-27B-Q8_0.gguf;       N=2; T=1.0 ;;
@@ -54,7 +48,7 @@ if [[ -n "$THINK" ]]; then
 fi
 
 echo "qwen-cli: ${Q} (MTP n=${N}, temp ${T}${THINK:+, think ${THINK}}) — timings print after each reply; Ctrl-C to quit"
-# No --prompt => interactive conversation mode. --mlock keeps prefill fast under pressure.
+# No --prompt => interactive mode. --mlock keeps prefill fast under memory pressure.
 exec llama-cli -m "$M" \
   --spec-type draft-mtp --spec-draft-n-max "$N" \
   -c "${LLM_CTX:-65536}" -ngl 99 -fa on --mlock \

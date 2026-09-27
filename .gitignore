@@ -4,10 +4,9 @@
 .last_inuse_sweep
 plugin-catalog-cache.json
 __pycache__/
-.mlxenv/
 cache/
 *.jsonl
 
-# Benchmark output from scripts/llm-bench-turns — machine-specific timings.
+# Local benchmark output and depth-ladder corpora — machine-specific.
 bench-results/
 stress-corpus/

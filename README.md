@@ -39,20 +39,19 @@ kiro-cli login
 
 ## 2. Fast Installation via `setup.sh`
 
-This repository includes a `setup.sh` script to configure everything for you. It will:
+`setup.sh` configures everything. It will:
 - Back up your existing `~/.claude/` configuration.
 - Install the custom Claude plugins: `agy` (Antigravity) and `kiro` (Kiro CLI).
-- Copy `settings.json` (skips permission alerts and enables plugins).
-- Install the **local LLM stack** (`llm-serve`, `qwen`, `qwen-code`,
-  `claude-local-subagent`, and the Anthropic-translation proxy) into `~/.local/bin`.
+- Copy `settings.json` (skips permission alerts and enables plugins) and
+  `statusline-command.sh` (the status line `settings.json` points at).
+- Symlink the **local LLM stack** (`llm-serve`, `llm-proxy.mjs`, `qwen`, `qwen-cli`,
+  `qwen-code`, `openrouter-code`, `claude-local-subagent`) into `~/.local/bin`.
 - Stage the opt-in `local-llm` plugin (the `local-qwen` subagent + skill) into
   `~/.claude/local-plugins/` — **not** active in a plain `claude` session.
-- Copy `statusline-command.sh` (the status line `settings.json` points at).
-- Copy and activate the **Claude Auto-Resume Daemon** (`launchd`).
-- Append the `claude` dispatcher function and the aliases to your `~/.zshrc`
-  (skipped if the dispatcher is already defined there).
+- Install and activate the **Claude Auto-Resume Daemon** (`launchd`).
+- Add `dotfiles/zshrc_snippet` to `~/.zshrc` between marker lines; a re-run
+  replaces that block in place.
 
-To run it:
 ```bash
 chmod +x setup.sh
 ./setup.sh
@@ -62,42 +61,35 @@ source ~/.zshrc
 **Two notes for a fresh machine:**
 - The status line needs `jq` (`brew install jq`). The installer warns if it's missing.
 - `settings.json` enables `frontend-design` and `swift-lsp` from the built-in
-  `claude-plugins-official` marketplace. Those are **not** vendored in this repo —
-  Claude Code fetches them on first run. Only `agy` (from `antigravity-cc`) and the
-  opt-in `local-llm` plugin are vendored here.
+  `claude-plugins-official` marketplace. Those are **not** vendored here —
+  Claude Code fetches them on first run.
 
 ---
 
-## 3. Productive Shell Aliases
-
-The installer appends the following aliases to your `~/.zshrc`. These bypass prompts, prevent Mac sleep during long runs, and handle background tasks:
+## 3. Shell Commands & Aliases
 
 ### 3.1 The `claude` dispatcher
 
-`claude` is a shell **function**, not an alias — an alias cannot take a
-subcommand, and routing `claude local <model>` at the local stack needs one.
-Plain `claude` behaves exactly as the old `alias claude="claude
---dangerously-skip-permissions"` did:
+`claude` is a shell **function** (an alias cannot take subcommands). Plain `claude`
+runs `claude --dangerously-skip-permissions` on your Pro subscription.
 
 ```bash
-claude                       # Pro subscription, --dangerously-skip-permissions
-claude open_router ox_alpha  # OpenRouter (Stealth Ox Alpha)
-claude local qwen38_27       # local Qwen 3.8 27B
-claude local                 # whichever model is already resident
-claude subagent              # Pro + the opt-in local delegation subagent
+claude                                       # Pro subscription
+claude open_router [ox_alpha|<model_id>]     # OpenRouter (default stealth/ox-alpha)
+claude local qwen38_27 [--bits 4|5|6|8] [--think xhigh|medium|low]
+                                             # local Qwen 3.8 27B (default --bits 5, --think xhigh)
+claude local [--think xhigh|medium|low]      # whichever local model is already resident
+claude subagent                              # Pro + the opt-in local-qwen delegation subagent
 ```
 
-Every branch forwards `"$@"`, so flags survive: `claude -p "..."`,
-`claude local qwen38_27 --resume`. Inside the function, `command claude`
-bypasses it, so it cannot recurse.
+`--bits 4` runs on LM Studio's Splash engine (errors if LM Studio isn't installed);
+`--bits 5|6|8` run a GGUF on llama.cpp. `--think` also accepts `high`/`max` (= xhigh),
+`med`, and `minimal` (= low). Every branch forwards `"$@"`, so
+`claude -p "..."` and `claude local qwen38_27 --resume` work.
 
-`agy` is still a plain alias:
-```bash
-alias agy="agy --dangerously-skip-permissions"
-```
+`agy` is a plain alias: `alias agy="agy --dangerously-skip-permissions"`.
 
 ### 3.2 Sleep Prevention
-Prevents your Mac from sleeping during long background coding runs, and allows re-enabling it afterwards:
 ```bash
 alias sleep_no="sudo pmset -a disablesleep 1"  # Disable sleep
 alias sleep_ok="sudo pmset -a disablesleep 0"  # Enable sleep
@@ -109,32 +101,24 @@ alias claude_resume="claude-resume"
 alias claude_resume_logs="claude-resume logs"
 ```
 
-### 3.4 Local LLM Aliases
+### 3.4 Local LLM commands
 ```bash
-llm_start / llm_stop / llm_status / llm_logs   # manage the local stack
-llm_use_27 / llm_use_35                        # switch resident model
+llm-serve start [gguf5|gguf6|gguf8|splash4]   # default gguf5; start = switch
+llm-serve stop | status | which | logs [server|proxy]
+llm-serve restart [model]   # full restart (reloads weights)
+llm-serve restart-proxy     # reload just the proxy, model stays resident
 
-# llm-serve subcommands with no alias
-llm-serve which           # which model is resident
-llm-serve restart         # full restart (reloads weights — slow)
-llm-serve restart-proxy   # reload just the proxy, model stays resident
+qwen "explain this regex"   # one-shot prompt against the resident model
+qwen-cli [gguf5|gguf6|gguf8|splash4]   # interactive terminal chat
+
+# aliases
+llm_start / llm_stop / llm_status / llm_logs
+llm_use_splash              # llm-serve start splash4
+claude_local_splash         # qwen-code --model splash4
+qwen_splash_chat            # qwen-cli splash4
 ```
 
-Claude Code on local weights goes through the §3.1 dispatcher:
-
-```bash
-claude local qwen38_27   # Qwen 3.8 27B (dense, higher quality)
-claude local qwen38_27 --bits 4   # same model, 4-bit on LM Studio's Splash engine
-claude local             # whichever model is resident
-claude subagent          # Pro plan + the local-qwen delegation subagent
-```
-
-The older `claude_local_qwen_3.8_27` / `claude_local` /
-`claude_local_subagent` aliases are still defined and still work — they are what
-the dispatcher branches call — but the `claude local ...` form is the one to
-use.
-
-**Local models never leak into real work.** Two independent guarantees:
+**Local models never leak into real work:**
 
 | Command | Model driving | Local subagent available? |
 |---|---|---|
@@ -142,43 +126,26 @@ use.
 | `claude subagent` | Pro subscription | Yes, and only when you name it in the prompt |
 | `claude local ...` | Local Qwen | n/a — the whole session is local |
 
-The `local-llm` plugin lives in `~/.claude/local-plugins/`, which Claude Code
-does **not** read; `claude subagent` loads it for one session via
-`--plugin-dir`. And `ANTHROPIC_BASE_URL` is never exported globally — it is
-scoped inside the `qwen-code` process — so plain `claude` always stays on your
-Pro subscription.
+The `local-llm` plugin lives in `~/.claude/local-plugins/`, which Claude Code does
+**not** read; `claude subagent` loads it for one session via `--plugin-dir`.
+`ANTHROPIC_BASE_URL` is never exported globally — it is scoped inside `qwen-code`.
 
-### 3.5 OpenRouter Cloud LLM Integration (`claude open_router`)
+### 3.5 OpenRouter (`claude open_router`)
 
-Claude Code can also connect to OpenRouter's Anthropic-compatible API gateway (such as `stealth/ox-alpha`).
-
-#### 1. Add your OpenRouter API key to `~/.zshrc`
-Add the `OPENROUTER_API_KEY` environment variable in your `~/.zshrc`:
+Add your key to `~/.zshrc` and reload:
 ```bash
 export OPENROUTER_API_KEY="sk-or-v1-your-key-here"
 ```
-Then reload your shell:
+
 ```bash
-source ~/.zshrc
+claude open_router ox_alpha                                  # interactive (1M context)
+claude open_router ox_alpha -p "summarize the architecture"  # headless
+claude open_router <model_id>                                # any OpenRouter model
+claude_openrouter / claude_openrouter_ox_alpha / claude_ox_alpha   # aliases
 ```
 
-#### 2. Usage
-```bash
-# Interactive session with Ox Alpha (1M context window)
-claude open_router ox_alpha
-
-# Headless / one-shot execution
-claude open_router ox_alpha -p "summarize the architecture"
-
-# Any other OpenRouter model
-claude open_router <model_id>
-
-# Dedicated aliases
-claude_openrouter_ox_alpha
-claude_ox_alpha
-```
-
-The `openrouter-code` wrapper scopes the OpenRouter credentials and `ANTHROPIC_BASE_URL` strictly to that process, leaving plain `claude` completely on your official Anthropic subscription.
+`openrouter-code` scopes the OpenRouter credentials and `ANTHROPIC_BASE_URL` to its
+own process, so plain `claude` stays on your Anthropic subscription.
 
 ---
 
@@ -199,165 +166,98 @@ The auto-resume daemon runs silently in the background via `launchd` (`com.user.
 
 ## 5. Local LLM Setup (Qwen 3.8 27B)
 
-One model, two engines: **LM Studio's Splash engine** (4-bit, `--bits 4`, the fastest)
-and **`llama.cpp`** (`llama-server`) GGUFs at 5/6/8-bit with MTP speculative decoding.
-Qwen 3.6 35B A3B was removed on 2026-09-27 once Splash made the 27B fast enough.
+One model, two engines:
 
-The local models are wired into **Claude Code only**. Kiro and agy were evaluated
-and deliberately left out — agy cannot reach a local model at all (it ignores
-`mcpServers` and takes no custom endpoint), and Kiro's MCP integration was removed
-to keep the experiment confined to one harness.
+| Alias | Engine | `--bits` | Notes |
+|---|---|---|---|
+| `splash4` | LM Studio Splash (4-bit + DFlash2 drafter) | 4 | fastest; best deep-context recall |
+| `gguf5` | llama.cpp, UD-Q5_K_XL, MTP draft-n 2 | 5 | default |
+| `gguf6` | llama.cpp, UD-Q6_K_XL, MTP draft-n 4 | 6 | |
+| `gguf8` | llama.cpp, Q8_0, MTP draft-n 3 | 8 | at the memory edge; silent OOM near ~156k context |
 
-**Why llama.cpp and not vLLM:** MTP requires a single slot (`-np 1`), so you get
-concurrency *or* MTP — never both. vLLM is CUDA-first with no MTP support for
-these GGUFs, which is why it benchmarks *slower* at concurrency 1 on Apple
-Silicon. With one user at the keyboard, keep MTP and let requests queue.
+Only one model is resident at a time; `llm-serve start <alias>` replaces it, and the
+proxy survives the switch. Thinking defaults to `xhigh` everywhere (`LLM_EFFORT`,
+`--think`); `--think medium|low` trades depth for latency.
 
-> **Using these models *inside* Claude Code:** see
-> **[LOCAL_LLM_HARNESS.md](LOCAL_LLM_HARNESS.md)** for the full integration guide.
-> Short version — `setup.sh` installs `llm-serve`, `qwen`, and `qwen-code`:
->
-> ```bash
-> llm-serve start splash4      # load Qwen 3.8 27B on Splash + the Anthropic-translation proxy
-> qwen "explain this regex"    # one-shot, from your shell or a Bash call
-> claude local qwen38_27 --bits 4   # Claude Code running 100% on local weights
-> ```
->
-> Plain `claude` is unaffected and still uses your Claude Pro subscription.
->
-> `WebSearch`/`WebFetch` work on the local stack too — they are Anthropic
-> *server-side* tools, so the proxy executes them itself rather than letting the
-> model call into a void. Keyless by default; see
-> [LOCAL_LLM_HARNESS.md §7](LOCAL_LLM_HARNESS.md).
+The local models are wired into **Claude Code only**. agy cannot reach a local model
+(it ignores `mcpServers` and takes no custom endpoint), and Kiro's MCP integration was
+removed to keep the experiment confined to one harness. Full integration guide:
+**[LOCAL_LLM_HARNESS.md](LOCAL_LLM_HARNESS.md)**.
+
+```bash
+llm-serve start splash4            # load the model + the Anthropic-translation proxy
+qwen "explain this regex"          # one-shot, from your shell or a Bash call
+claude local qwen38_27 --bits 4    # Claude Code running 100% on local weights
+```
+
+`WebSearch` works on the local stack too: the proxy runs it itself (keyless
+DuckDuckGo by default). See [LOCAL_LLM_HARNESS.md §7](LOCAL_LLM_HARNESS.md).
 
 ### 5.0 Splash engine (LM Studio): `--bits 4`
 
 [Splash](https://lmstudio.ai/blog/splash-engine) is Inco AI's Apple-Silicon engine
-inside LM Studio, tuned for `incoai/Qwen3.8-27B-Splash`. That model is **4-bit only**
-(14.1 GiB target in Splash's own format, plus a bundled DFlash2 drafter), so it
-can't reuse the GGUF/MLX files. It needs an M3 or newer, macOS 26.4+ and 36 GB+.
+inside LM Studio, tuned for `incoai/Qwen3.8-27B-Splash` (4-bit only, its own weight
+format plus a bundled DFlash2 drafter). It needs an M3 or newer, macOS 26.4+ and 36 GB+.
 
 One-time install:
 
 ```bash
 brew install --cask lm-studio && ~/.lmstudio/bin/lms bootstrap
-# LM Studio → Settings → Runtime → Experimental → "Splash (Metal)" → Download
+lms runtime get splash
 lms get https://huggingface.co/incoai/Qwen3.8-27B-Splash   # full URL: the bare name hits LM Studio Hub
 ```
 
-Ways to use it:
+`llm-serve start splash4` installs a small LM Studio virtual model
+(`dotfiles/lmstudio/`) that exposes the template's `reasoning_effort`, so `--think`
+reaches the model.
 
 | | |
 |---|---|
 | Claude Code | `claude local qwen38_27 --bits 4` (or `claude_local_splash`) |
-| llama.cpp 4-bit instead | `claude local qwen38_27 --bits 4 --engine gguf` |
 | Serve only | `llm-serve start splash4` (`llm_use_splash`) |
-| One-shot CLI | `qwen "..."`, `qwen --think "..."` (effort xhigh) |
+| One-shot CLI | `qwen "..."`, `qwen --think "..."` |
 | Interactive terminal chat | `qwen-cli splash4` (`qwen_splash_chat`, wraps `lms chat`) |
 | UI | the LM Studio app → Chat, with Qwen3.8-27B-Splash loaded |
 
-If LM Studio isn't installed, `--bits 4` falls back to `gguf4` with a note.
-
 Measured here (M5 Pro 64 GB): warm follow-ups in 1–2 s, 97–99% prompt-cache hits,
-50–84 t/s decode, versus ~13–26 t/s on GGUF/MLX. Splash always reasons at `xhigh`:
-LM Studio doesn't pass `--think low|medium` through to the model.
+35–84 t/s decode, and correct recall at 198,609 tokens of context (depth ladder,
+2026-09-27; gguf5's best was 158,766).
 
-**Thinking defaults to `xhigh`** for every local model (`LLM_EFFORT`, the
-`--think` flag, `qwen --think`, `qwen-cli`). Pass `--think medium` to trade depth
-for latency (not on Splash, see above).
+### 5.1 llama.cpp (`--bits 5|6|8`)
 
-### 5.1 Serving Parameters & Launch Commands
-
-We use `llama-server` from Homebrew:
 ```bash
 brew install llama.cpp
 ```
 
-The launch lines below use `-c 65536`. For harness use `llm-serve` goes further
-and serves the model's full native **262,144** window with a quantized KV cache
-(`-ctk/-ctv q8_0`) — measured at only **+1.4 GB** over 65k, because these Qwen
-MoE models use very few KV heads. That headroom matters: Claude Code's system
-prompt plus tool definitions alone measure **~23,000 tokens**. See
-[LOCAL_LLM_HARNESS.md §4](LOCAL_LLM_HARNESS.md) for the caveat that deep context
-is cheap to *allocate* but slow to *use*.
-
-> **`--mlock` is not optional.** A 27–38 GB model on a 64 GB machine leaves
-> little headroom, and macOS compresses or evicts model pages as soon as
-> Spotlight and friends get busy. Generation barely notices; prefill sweeps every
-> weight per batch and falls off a cliff — measured on an *idle* server at
-> **196 → 4 tok/s**. Pinning the weights held 79 tok/s on the same run.
-> `llm-serve` passes it by default (`LLM_MLOCK=0` opts out); the raw commands
-> below need it spelled out.
-
-#### 🥇 Model 1: Qwen 3.8 27B (Dense) — MLX, 8/6/4-bit + MTP
-Replaced Qwen 3.6 27B on 2026-08-14, and moved from llama.cpp to **MLX** on 2026-08-15
-after the quant sweep in `local_llm_bench`. MLX won every matched-size comparison and
-matched llama.cpp's warm-cache TTFT, which is the metric that decided the 3.6 generation
-the other way.
-
-| Serving | Size | Decode @23k | Warm TTFT |
-|---|---:|---:|---:|
-| `mlx8` MLX 8-bit | 28 GB | 13.55 tok/s | 1.28 s |
-| `mlx6` MLX 6-bit | 21 GB | **16.55 tok/s** | 1.28 s |
-| `mlx4` MLX 4-bit | 15 GB | 19.78 tok/s | — |
-| `27b` llama.cpp Q8_0 | 27 GB | 12.51 tok/s | 1.50 s |
-
-`mlx8` is the default because it is closest to the reference and **quality below 8-bit is
-not yet measured**. `mlx6` is ~24% faster per warm turn and 7 GB smaller if you want it.
+`llm-serve` launches, for `gguf5`:
 
 ```bash
-llm-serve start mlx8                  # or mlx6 / mlx4
-claude local qwen38_27 --bits 6       # Claude Code, pinned to the 6-bit build
-claude local qwen38_27_gguf           # llama.cpp fallback
+llama-server -m ~/Models/qwen3.8-27b-gguf/Qwen3.8-27B-UD-Q5_K_XL.gguf \
+  --spec-type draft-mtp --spec-draft-n-max 2 \
+  -c 262144 -ngl 99 -fa on -np 1 --mlock \
+  --cache-ram 24576 --slot-save-path ~/.local/state/local-llm/kv \
+  --jinja --reasoning-format deepseek --reasoning-budget -1 \
+  --temp 1.0 --top-p 0.95 --top-k 20 \
+  -a qwen-local --host 127.0.0.1 --port 8089 --no-webui
 ```
 
-##### MLX serving gotchas
-
-`mlx_vlm.server` differs from `llama-server` in five ways that each break serving. All are
-handled by `llm-serve`; they are recorded here because every one of them fails quietly or
-misleadingly, and anyone reproducing this by hand will hit them.
-
-| Gotcha | Symptom |
-|---|---|
-| No `-a` model alias — the request's `model` field names something to *load* | `401` from Hugging Face looking for a repo called `qwen-local`; the proxy must send the model path |
-| `--enable-thinking` is off by default | **Silent.** Template emits a pre-closed `<think></think>`, Qwen 3.8 answers with no reasoning, requests look fine |
-| `chat_template_kwargs` is ignored | `PROXY_THINK` cannot control thinking; only the server flag decides |
-| `--thinking-budget` + speculative decoding | `thinking_budget is not supported with speculative decoding in the server` |
-| `APC_ENABLED` defaults to `"0"` upstream | **Silent.** Prompt caching off, so every turn re-prefills the whole preamble. `llm-serve` exports `1` (with `APC_EXACT_CACHE_ENTRIES=2` and `APC_SKIP_FULL_STORE=1`) since 2026-08-22 |
-
-Quantized KV (`--kv-bits`) also breaks this architecture: since the 2026-08-22 runs it
-silently truncates streaming tool-call responses (the stream ends without a
-`finish_reason` chunk), so Claude Code turns end mid-flight. KV stays fp16.
-
-Only the second and fifth produce plausible-looking output while being wrong, which makes
-them the expensive ones: the model answers, just not the way it is supposed to.
-
-Speculation is a separate 8-bit drafter checkpoint rather than a head inside the weights.
-That is why MLX holds ~48% acceptance at every target size while llama.cpp's inline head
-degrades as you quantize — its MTP speedup falls from 1.36x at Q8 to **0.87x at Q4**, i.e.
-below Q8 you are faster with `LLM_SPEC=0`.
-
-- **Launch Command (`serve_qwen_38_27b`, llama.cpp fallback)**:
-  ```bash
-  llama-server -m ~/Models/qwen3.8-27b-gguf/Qwen3.8-27B-Q8_0.gguf \
-    --spec-type draft-mtp --spec-draft-n-max 3 \
-    -c 65536 -ngl 99 -fa on -np 1 --mlock --jinja --reasoning-format deepseek \
-    --temp 1.0 --top-p 0.95 --top-k 20 --host 127.0.0.1 --port 8089
-  ```
-
-`llm-serve` additionally passes `--cache-reuse 256` (salvages matching KV chunks
-by shifting instead of all-or-nothing prefix matching) and `--slot-save-path`
-(enables the `/slots` save/restore endpoints — inert until something calls
-them). Neither is needed for one-shot raw use.
+- **`--mlock` is not optional.** Without it macOS evicts model pages under memory
+  pressure and prefill collapses (measured 196 → 4 tok/s on an idle server).
+  `LLM_MLOCK=0` opts out.
+- **`--cache-ram 24576`** — a saved prompt state costs ~103 KB/token on this hybrid
+  model, so llama.cpp's 8 GiB default silently drops warm restore past ~79k tokens.
+- **`-np 1`** is required by MTP, so requests queue. vLLM is no better here: it is
+  CUDA-first with no MTP for these GGUFs, so it is slower at concurrency 1.
+- Claude Code's system prompt plus tool definitions alone are **~23,000 tokens**,
+  which is why the full 262,144 window is served. See
+  [LOCAL_LLM_HARNESS.md §4](LOCAL_LLM_HARNESS.md).
 
 ### 5.2 Model Downloads
-Download the 8-bit quantized models from Hugging Face:
+
 ```bash
-# Qwen 3.8 27B GGUF (MTP head is inline; no separate MTP repo for this generation)
-huggingface-cli download unsloth/Qwen3.8-27B-GGUF Qwen3.8-27B-Q8_0.gguf --local-dir ~/Models/qwen3.8-27b-gguf
-
-# Qwen 3.8 27B MLX (the default serving path) + its MTP drafter
-huggingface-cli download mlx-community/Qwen3.8-27B-8bit --local-dir ~/Models/qwen3.8-27b-mlx-8bit
-huggingface-cli download vvsotnikov/Qwen3.8-27B-MTP-MLX-8bit --local-dir ~/Models/qwen3.8-27b-mtp-mlx-8bit
-
+# Splash: see §5.0.
+# GGUFs (unsloth; the MTP head is inline, no separate drafter file)
+huggingface-cli download unsloth/Qwen3.8-27B-GGUF Qwen3.8-27B-UD-Q5_K_XL.gguf --local-dir ~/Models/qwen3.8-27b-gguf
+huggingface-cli download unsloth/Qwen3.8-27B-GGUF Qwen3.8-27B-UD-Q6_K_XL.gguf --local-dir ~/Models/qwen3.8-27b-gguf
+huggingface-cli download unsloth/Qwen3.8-27B-GGUF Qwen3.8-27B-Q8_0.gguf       --local-dir ~/Models/qwen3.8-27b-gguf
 ```

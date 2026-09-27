@@ -32,19 +32,12 @@
  *   FETCH_MAX_CHARS   web_fetch page cap   (default 20000)
  *   MAX_PROXY_HOPS    search/answer rounds per turn (default 4)
  *
- * Thinking is ON by default, so the stream goes quiet for a long time: a harness
- * prompt is ~23k tokens, and on the 27B that is ~85 s of prefill plus minutes of
- * reasoning before the first visible token. Nothing is wrong during that window,
- * but a silent socket looks dead — so this proxy emits SSE pings throughout.
- * Cap the reasoning phase server-side with `--reasoning-budget` (llm-serve does).
+ * Prefill plus reasoning can keep the stream silent for minutes, and a silent
+ * socket looks dead, so the proxy emits SSE pings throughout.
  *
- * Anthropic `thinking` blocks carry a signature that is normally Anthropic's
- * proof the reasoning came back unmodified, which a local model cannot produce —
- * so these were long left unemitted for fear of 400s. That fear turns out not to
- * apply here: nothing validates the signature, because this proxy *is* the
- * server. The harness simply round-trips the block to us on the next turn, and
- * convertMessages drops it like any other non-text block. Measured end to end:
- * Claude Code parses the blocks, keeps the signature, and renders them.
+ * Native `thinking` blocks carry a fake signature. Nothing validates it: this proxy
+ * is the server, and the harness only round-trips the block back to us, where
+ * convertMessages drops it.
  */
 
 import http from "node:http";
@@ -55,13 +48,7 @@ const UPSTREAM = (process.env.UPSTREAM || "http://127.0.0.1:8089/v1").replace(/\
 const MODEL = process.env.MODEL || "qwen-local";
 const PORT = Number(process.env.PORT || 8790);
 const THINK = process.env.PROXY_THINK !== "0";
-// How the reasoning phase is surfaced. The model reasons on every turn either
-// way — this only decides whether you get to see it happening.
-//   off     nothing; the SSE pings are the only sign of life
-//   status  compact heartbeat: "thinking… 640 tokens · 25s", then a one-line total
-//   text    the whole chain of thought, inline as plain text
-//   native  real Anthropic thinking blocks, rendered by Claude Code's own UI
-// EMIT_THINKING=1 is kept as an alias for `text`.
+// How the reasoning phase is surfaced (see the header); it happens either way.
 const THINK_VIEW = (
   process.env.THINK_VIEW || (process.env.EMIT_THINKING === "1" ? "text" : "off")
 ).toLowerCase();
@@ -69,28 +56,16 @@ const THINK_TICK_MS = Number(process.env.THINK_TICK_MS || 10000);
 const EMIT_THINKING = THINK_VIEW === "text";
 const DEBUG = process.env.DEBUG === "1";
 
-// How often to emit an SSE ping while the upstream is silent. Prefill on a large
-// harness prompt can run 85 s+ with no bytes at all; without a heartbeat the
-// harness concludes the connection is dead and retries.
+// SSE ping interval while upstream is silent; without it the harness retries.
 const PING_INTERVAL_MS = Number(process.env.PING_INTERVAL_MS || 5000);
 
-// Claude Code's WebSearch and WebFetch are Anthropic *server-side* tools: they
-// arrive as versioned entries in `tools` (web_search_20260209, …) and the API
-// itself runs them, feeding results back to the model before it ever answers.
-// Point the harness at a local model and nobody is left to execute them — the
-// model gets handed a tool whose results never arrive. So this proxy executes
-// them, in the same shape: the call is intercepted here, never forwarded to the
-// harness, and the model is re-prompted with the results.
+// Anthropic server-side tools (web_search_20260209, …) are normally executed by the
+// API itself; against a local model nobody would run them, so this proxy does.
 const WEB_TOOLS = process.env.WEB_TOOLS !== "0";
 
-// Claude Code does not use the API's server-side web_search tool. It ships its
-// own client-side `WebSearch`/`WebFetch` (capital W, with an input_schema), and
-// runs them itself. `WebFetch` works fine against a local model — it fetches
-// directly and summarises with whatever small model is configured. `WebSearch`
-// does not: its implementation reaches Anthropic for the actual search, so
-// pointed at a local endpoint it comes back "Did 0 searches". So we intercept
-// that one by name and run it here instead. Comma-separated list to override;
-// empty string disables. WebFetch is deliberately absent — it already works.
+// Claude Code's client-side WebSearch reaches Anthropic for the search itself, so
+// against a local endpoint it returns "Did 0 searches"; intercept it by name.
+// WebFetch already works locally and is deliberately absent. Comma-separated; "" disables.
 const HARNESS_TOOLS = new Set(
   (process.env.PROXY_HARNESS_TOOLS ?? "WebSearch")
     .split(",")
@@ -107,10 +82,8 @@ const UA =
   process.env.WEB_UA ||
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
 
-// Writes each translated upstream request to a file. The reason this is worth
-// keeping: llama-server's prefix cache is all-or-nothing in practice, so when a
-// session re-prefills 20k tokens the only way to find out *why* is to diff two
-// consecutive payloads and see what moved.
+// Dump each translated request; diffing two consecutive payloads is how you find
+// what broke the prefix cache.
 const DUMP_DIR = process.env.DUMP_DIR || "";
 // "" leaves the model's own default. "low" | "medium" | "xhigh" for Qwen 3.8.
 const REASONING_EFFORT = process.env.REASONING_EFFORT || "";
@@ -369,33 +342,12 @@ function blocksToText(content) {
 }
 
 /**
- * Anthropic messages -> OpenAI messages.
- *
- * The shapes differ in two structural ways, not just naming:
- *   - assistant tool calls are content blocks in Anthropic, a sibling
- *     `tool_calls` array in OpenAI;
- *   - tool results are user-role content blocks in Anthropic, but their own
- *     `role: "tool"` messages in OpenAI.
- */
-/**
  * Remove content that changes every turn from the system prompt.
  *
- * The system prompt is the one span that has to be byte-identical across turns, because
- * mlx_vlm's prompt cache runs in "exact" mode for hybrid models: a stored entry is reused
- * only if it is a strict prefix of the new prompt (apc.py:3020), with no partial credit.
- * One changed byte at 94% depth throws away the whole 24k-token prefix and costs a full
- * ~60s re-prefill on every turn.
- *
- * Claude Code appends a `<total_tokens>` budget note to the system prompt and accumulates
- * one more of them per turn — measured 2 blocks on turn 1, 3 on turn 2 — which moved the
- * first divergence to char 15036 of 15924 and defeated the cache completely. The note is
- * advisory about remaining budget and carries nothing a local model can act on.
- *
- * Second pattern, measured 2026-08-22 (overnight runs): the periodic "The task tools
- * haven't been used recently…" nudge is injected mid-system-prompt and even swaps
- * position with the adjacent <system-reminder> block between renders — divergence at
- * 46–79% depth, one ~60s full re-prefill every ~5th request. Like the budget note it is
- * harness housekeeping with no local-model value, so it goes too.
+ * The hybrid Qwen 3.8 cannot reuse a partial prefix, so one changed byte in the system
+ * prompt forces a full re-prefill. Claude Code's `<total_tokens>` budget notes (one more
+ * per turn) and the periodic "task tools haven't been used" nudge both do that, and
+ * neither carries anything a local model can act on.
  */
 function stripVolatile(text) {
   if (!text) return text;
@@ -406,14 +358,15 @@ function stripVolatile(text) {
     .trimEnd();
 }
 
+/**
+ * Anthropic messages -> OpenAI messages. Assistant tool calls become a sibling
+ * `tool_calls` array, and tool results become their own `role: "tool"` messages.
+ */
 function convertMessages(anthropicMessages, systemText) {
   const out = [];
 
-  // Qwen 3.8's chat template raises "System message must be at the beginning" if any
-  // system-role message appears after index 0. Anthropic carries the system prompt in a
-  // top-level field, but a system-role turn can still reach us inside `messages`, and
-  // emitting it inline puts one mid-conversation. Collect every piece of system content
-  // up front and send exactly one, first — which is also what the OpenAI shape expects.
+  // Qwen 3.8's template rejects a system message after index 0, so hoist every piece
+  // of system content into one leading message.
   const systemParts = [];
   if (systemText) systemParts.push(systemText);
   for (const msg of anthropicMessages || []) {
@@ -491,10 +444,7 @@ function convertTools(tools, proxyTools) {
   const out = [];
   for (const t of tools) {
     if (isServerTool(t)) {
-      // These used to slip through — a server tool does have a `name`, so the
-      // old `filter(t => t.name)` kept it and handed the model a parameterless
-      // `web_search` whose calls went nowhere. Either we execute it here, or it
-      // must not be offered at all.
+      // Either we execute it here, or it must not be offered at all.
       const handler = WEB_TOOLS ? PROXY_TOOLS[t.name] : null;
       if (handler) {
         proxyTools.add(t.name);
@@ -543,11 +493,7 @@ function toOpenAIRequest(body) {
     stream: !!body.stream,
   };
   if (body.max_tokens) req.max_tokens = body.max_tokens;
-  // Qwen 3.8 exposes a reasoning_effort knob and defaults to "xhigh", which on an agent
-  // loop can mean a minute of thinking before the first visible token. mlx_vlm ignores
-  // chat_template_kwargs, so this has to go on the request as a top-level field —
-  // verified against mlx_vlm.server, where chat_template_kwargs changed nothing and the
-  // top-level field changed the output. Unset means "leave the model's default alone".
+  // Sent as a top-level field; unset leaves the model's default (xhigh).
   if (REASONING_EFFORT) req.reasoning_effort = REASONING_EFFORT;
   if (typeof body.reasoning_effort === "string") req.reasoning_effort = body.reasoning_effort;
   if (typeof body.temperature === "number") req.temperature = body.temperature;
@@ -1135,9 +1081,7 @@ const server = http.createServer(async (req, res) => {
       ` proxy_tools=${[...proxyTools].join(",") || "none"} stream=${oaiReq.stream}`,
   );
 
-  // Note the handler shadows `path` with the request path, so no node:path here.
-  // Wrapped: a debug aid must never be able to take the whole proxy down, and an
-  // unhandled throw in this async handler would do exactly that.
+  // Wrapped: a debug aid must never take the proxy down.
   if (DUMP_DIR) {
     const f = `${DUMP_DIR}/req-${Date.now()}-${randomUUID().slice(0, 8)}.json`;
     try {

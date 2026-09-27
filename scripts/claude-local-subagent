@@ -1,21 +1,15 @@
 #!/usr/bin/env bash
 # claude-local-subagent — Claude Code on your Pro subscription, with the local
-# Qwen delegation subagent available for this session only.
-#
-# The point: Claude drives (full quality, cloud model), and can hand bulk text
-# work to the local model — but ONLY when you ask it to in the prompt.
+# Qwen delegation subagent available for this session only (`claude subagent`).
 #
 # The local-llm plugin is deliberately NOT installed into ~/.claude, so a plain
-# `claude` has no local subagent and no local skill at all. This wrapper loads it
-# for one session via --plugin-dir.
+# `claude` has no local subagent or skill; this loads it via --plugin-dir.
+# Unlike `claude local ...`, the driver here is your normal Claude model.
 #
-#   claude_local_subagent                    interactive
-#   claude_local_subagent -p "ask qwen to summarise src/parser.ts"
+#   claude subagent                          interactive
+#   claude subagent -p "ask qwen to summarise src/parser.ts"
 #
 # Every argument is passed through to `claude` untouched.
-#
-# Note this is NOT the same as `claude local ...`, which runs Claude Code
-# itself on local weights. Here the driver is your normal Claude model.
 
 set -euo pipefail
 

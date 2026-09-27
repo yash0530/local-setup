@@ -1,12 +1,8 @@
 #!/usr/bin/env bash
-# openrouter-code — Claude Code connected via OpenRouter API.
+# openrouter-code — Claude Code via OpenRouter's Anthropic-compatible gateway.
 #
-# Routes Claude Code to OpenRouter's Anthropic Messages API gateway.
-# Supports stealth/ox-alpha and other OpenRouter models.
-#
-# Usage:
-#   openrouter-code                           # interactive session with default model (ox-alpha)
-#   openrouter-code --model ox_alpha          # interactive session with ox-alpha
+#   openrouter-code                           # default model (stealth/ox-alpha)
+#   openrouter-code --model ox_alpha          # ox-alpha
 #   openrouter-code --model <model_id>        # any other OpenRouter model
 #   openrouter-code -p "prompt"               # headless one-shot
 #
@@ -14,7 +10,6 @@
 
 set -euo pipefail
 
-# Ensure OPENROUTER_API_KEY is available in the environment
 if [[ -z "${OPENROUTER_API_KEY:-}" ]]; then
   echo "Error: OPENROUTER_API_KEY environment variable is not set." >&2
   echo "Add the following line to your ~/.zshrc:" >&2

@@ -2,24 +2,19 @@
 # Productivity & Local Developer Setup Snippet
 # ==============================================================================
 
-# Aliases with dangerous flag (skip permission prompts)
 alias agy="agy --dangerously-skip-permissions"
 
-# Claude dispatcher. This replaces the old `alias claude=...`: an alias cannot
-# take a subcommand, so routing `claude local <model>` or `claude open_router <model>`
-# needs a function. `command claude` bypasses this function, so it does not recurse.
+# Claude dispatcher. A function, not an alias, because it takes subcommands.
+# `command claude` bypasses it, so it does not recurse.
 #   claude                                    Pro subscription (default)
 #   claude open_router [ox_alpha|<model>]     OpenRouter (defaults to stealth/ox-alpha)
-#   claude local qwen38_27 [--bits 4|5|6|8] [--engine splash|gguf] [--think xhigh|medium|low]
+#   claude local qwen38_27 [--bits 4|5|6|8] [--think xhigh|medium|low]
 #                                             Qwen 3.8 27B (default bits 5, think xhigh;
 #                                             --bits 4 runs on LM Studio's Splash engine)
 #   claude local [--think xhigh|medium|low]   whatever model is already resident
-#   --think maps onto Qwen 3.8's own three reasoning levels (high/max also mean xhigh,
-#   med means medium, minimal means low). Default xhigh. It is applied on every launch,
-#   so a stack left at another level is brought back to the one you asked for.
 #   claude subagent                           Pro + the opt-in local delegation subagent
 # Every branch forwards "$@", so flags survive: `claude -p "..."`,
-# `claude open_router ox_alpha -p "..."`, `claude local qwen38_27 --resume`, and so on.
+# `claude local qwen38_27 --resume`, and so on.
 claude() {
   case "${1:-}" in
     open_router|openrouter)
@@ -43,68 +38,41 @@ claude() {
       shift
       case "${1:-}" in
         qwen38_27|qwen38_27b)
-          # Qwen 3.8 27B on GGUF (llama.cpp b10621+) — the recommended path since the
-          # 2026-08 campaign: warm cache now holds deep, memory is flat, every quant is
-          # usable (8-bit included, where MLX OOM'd/panicked). --bits picks the quant;
-          # 5 (Q5_K_XL) is the default — the best balance of depth, memory headroom and
-          # quality. 4 = fastest/most headroom, 6/8 = more quality (8 sits at the mem
-          # edge). --think sets reasoning effort (xhigh|medium|low, default xhigh); qwen-code
-          # maps it onto the model's levels and restarts only the proxy when a running stack
-          # is at another level. See local_llm_bench/results/vacation-run/RECOMMENDATION.md.
-          # --bits 4 runs incoai/Qwen3.8-27B-Splash (4-bit + DFlash2) on LM Studio's Splash
-          # engine; --engine gguf keeps the old llama.cpp gguf4. Splash is 4-bit only.
-          # If LM Studio isn't installed, --bits 4 falls back to gguf4 with a note.
-          # For the snappy MLX path (2-4s trivial turns, <~50K ctx): qwen-code --model mlx4
+          # --bits 4 = LM Studio Splash; 5/6/8 = llama.cpp GGUF. qwen-code normalises
+          # --think and restarts only the proxy if a running stack is at another level.
           shift
-          local _bits=5 _think=xhigh _engine=""
+          local _bits=5 _think=xhigh
           while true; do
             case "${1:-}" in
               --bits)   _bits="${2:-5}"; shift 2 ;;
               --think)  _think="${2:-xhigh}"; shift 2 ;;
-              --engine) _engine="${2:-}"; shift 2 ;;
               *) break ;;
             esac
           done
-          case "$_engine" in
-            ""|splash|gguf) ;;
-            *) echo "claude local qwen38_27: --engine must be splash or gguf" >&2; return 1 ;;
-          esac
-          if [[ "$_engine" == "splash" && "$_bits" != 4 ]]; then
-            echo "claude local qwen38_27: Splash is 4-bit only — use --bits 4 (or drop --engine)" >&2
-            return 1
-          fi
           local _m
           case "$_bits" in
             8) _m=gguf8 ;;
             6) _m=gguf6 ;;
             5) _m=gguf5 ;;
             4)
-              _m=splash4
-              if [[ "$_engine" == "gguf" ]]; then
-                _m=gguf4
-              elif ! command -v lms >/dev/null 2>&1 && [[ ! -x "$HOME/.lmstudio/bin/lms" ]]; then
-                if [[ "$_engine" == "splash" ]]; then
-                  echo "claude local qwen38_27: --engine splash needs LM Studio (lms) installed" >&2
-                  return 1
-                fi
-                echo "note: LM Studio (lms) not installed — falling back to gguf4 on llama.cpp" >&2
-                _m=gguf4
+              if ! command -v lms >/dev/null 2>&1 && [[ ! -x "$HOME/.lmstudio/bin/lms" ]]; then
+                echo "claude local qwen38_27: --bits 4 runs on LM Studio's Splash engine, which is not installed" >&2
+                echo "  install LM Studio (see README §5.0), or use --bits 5|6|8" >&2
+                return 1
               fi
+              _m=splash4
               ;;
             *) echo "claude local qwen38_27: --bits must be 4, 5, 6 or 8" >&2; return 1 ;;
           esac
           qwen-code --model "$_m" --think "$_think" "$@"
           ;;
-        # A bare `claude local` means "whatever model is already resident", and
-        # `claude local -p "..."` must still pass flags through. But an unrecognised
-        # *word* here used to be forwarded to claude as the initial prompt, so a stale
-        # shell or a typo turned `claude local qwen38_27` into a session whose first
-        # message was the literal text "qwen38_27". Fail loudly instead.
+        # Fail loudly on an unknown word: forwarding it would make it the session's
+        # first prompt.
         --think)   qwen-code --think "${2:-xhigh}" "${@:3}" ;;
         -*|"")     qwen-code --think xhigh "$@" ;;
         *)
           echo "claude local: unknown model '$1'" >&2
-          echo "  expected: qwen38_27 [--bits 4|5|6|8] [--engine splash|gguf] [--think xhigh|medium|low]" >&2
+          echo "  expected: qwen38_27 [--bits 4|5|6|8] [--think xhigh|medium|low]" >&2
           echo "  (if this name looks right, run: source ~/.zshrc)" >&2
           return 1
           ;;
@@ -122,28 +90,17 @@ alias claude_resume_logs="claude-resume logs"
 # ------------------------------------------------------------------------------
 # Local LLM stack (Qwen 3.8 27B via llama-server GGUF or LM Studio Splash)
 # ------------------------------------------------------------------------------
-# NOTE: ANTHROPIC_BASE_URL is deliberately NOT exported here. Exporting it would
-# hijack the plain `claude` command and route your Claude Pro subscription to the
-# local model. The local env is scoped inside the `qwen-code` wrapper only, so
-# `claude` on its own always stays on your Pro subscription.
+# ANTHROPIC_BASE_URL is deliberately NOT exported here: it would route plain `claude`
+# to the local model. It is scoped inside qwen-code only.
 
-# Stack lifecycle (one model fits in 64 GB at a time; start = switch)
 alias llm_start="llm-serve start"          # defaults to gguf5
 alias llm_stop="llm-serve stop"
 alias llm_status="llm-serve status"
 alias llm_logs="llm-serve logs"
-alias llm_use_27="llm-serve start mlx8"      # Qwen 3.8 27B, MLX 8-bit
-alias llm_use_27_6b="llm-serve start mlx6"   # ~24% faster/turn, 7 GB smaller
-alias llm_use_27_4b="llm-serve start mlx4"   # fastest; quality unmeasured
-alias llm_use_splash="llm-serve start splash4"   # Qwen 3.8 27B 4-bit on LM Studio Splash
+alias llm_use_splash="llm-serve start splash4"
 
-# Claude Code running entirely on a local model (pinned per alias)
-alias claude_local_qwen_3.8_27="qwen-code --model mlx8"
-alias claude_local="qwen-code"             # whatever model is already resident
 alias claude_local_splash="qwen-code --model splash4"
-
-# Interactive terminal chat with the Splash model via LM Studio's own CLI. The UI
-# equivalent is the LM Studio app's Chat tab (pick Qwen3.8-27B-Splash).
+# Terminal chat via LM Studio's CLI; the app's Chat tab is the UI equivalent.
 alias qwen_splash_chat="qwen-cli splash4"
 
 # Claude Code via OpenRouter (defaults to stealth/ox-alpha)
@@ -151,30 +108,9 @@ alias claude_openrouter="openrouter-code"
 alias claude_openrouter_ox_alpha="openrouter-code --model stealth/ox-alpha"
 alias claude_ox_alpha="openrouter-code --model stealth/ox-alpha"
 
-# Claude Code on your Pro subscription, PLUS the local-qwen delegation subagent
-# for this session only. Plain `claude` has no local subagent or skill at all --
-# the local-llm plugin is loaded per-session via --plugin-dir, never installed.
-alias claude_local_subagent="claude-local-subagent"
-
-# One-shot prompts against the resident model (thinking off by default)
-alias qwen_think="qwen --think"
-
-# Raw llama.cpp escape hatches (bench-derived MTP draft depths).
-# --mlock is not optional: without it macOS evicts model pages under memory
-# pressure and prefill collapses (measured 196 -> 4 tok/s on an idle server).
-# Qwen 3.8 wants temp 1.0 in thinking mode. KV stays fp16: quantizing it cost ~11% decode for no memory
-# saving worth having, measured on this machine.
-alias serve_qwen_38_27b="llama-server -m ~/Models/qwen3.8-27b-gguf/Qwen3.8-27B-Q8_0.gguf --spec-type draft-mtp --spec-draft-n-max 3 -c 65536 -ngl 99 -fa on -np 1 --mlock --jinja --reasoning-format deepseek --temp 1.0 --top-p 0.95 --top-k 20 --host 127.0.0.1 --port 8089"
-alias llama_qwen_38_27b="llama-cli -m ~/Models/qwen3.8-27b-gguf/Qwen3.8-27B-Q8_0.gguf --spec-type draft-mtp --spec-draft-n-max 3 -n -1"
-
-# Headless Server Sleep Management Aliases
-# (Disables sleep to keep background daemons running, and lets you safely re-enable it)
 alias sleep_no="sudo pmset -a disablesleep 1"
 alias sleep_ok="sudo pmset -a disablesleep 0"
 
-# Kiro CLI pre/post blocks are NOT part of this snippet. Kiro wants its post
-# block to be the last thing in ~/.zshrc, and this snippet gets appended to the
-# end — so installing it after Kiro leaves the post block stranded in the middle.
-# If kiro-cli is installed, move its post block back to the bottom of ~/.zshrc
-# after running setup.sh:
+# Kiro's post block must stay last in ~/.zshrc; if installing this snippet after Kiro,
+# move this line back to the bottom:
 #   [[ -f "${HOME}/Library/Application Support/kiro-cli/shell/zshrc.post.zsh" ]] && builtin source "${HOME}/Library/Application Support/kiro-cli/shell/zshrc.post.zsh"

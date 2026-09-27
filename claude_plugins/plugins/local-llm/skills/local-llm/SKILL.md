@@ -6,9 +6,8 @@ description: "Reference for the local Qwen 3.8 27B model (llama-server GGUF or L
 # local-llm
 
 Qwen 3.8 27B can be served locally, by `llama-server` (GGUF) or LM Studio's
-Splash engine (4-bit). This skill is
-**reference material for when the user asks for them** — it is not a suggestion
-to use them.
+Splash engine (4-bit). This skill is **reference material for when the user asks
+for it** — it is not a suggestion to use it.
 
 ## Routing policy (the important part)
 
@@ -40,7 +39,8 @@ Only one model is resident at a time, so switching *replaces* it:
 
 Model aliases: `splash4` (4-bit on LM Studio Splash) · `gguf5` / `gguf6` / `gguf8`
 (llama.cpp). From a shell, `claude local qwen38_27 --bits 4` picks Splash and
-`--bits 5|6|8` pins a GGUF.
+`--bits 5|6|8` pins a GGUF; `--think xhigh|medium|low` sets reasoning effort
+(default xhigh).
 
 ## The three ways in
 

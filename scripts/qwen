@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * qwen — one-shot prompt against the local llama-server.
+ * qwen — one-shot prompt against the local model server (llama-server or LM Studio).
  *
  * The universal integration point: every harness has a shell tool, so this works
  * identically from Claude Code (Bash), Antigravity (run_command), and Kiro

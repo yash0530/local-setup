@@ -28,18 +28,15 @@ mkdir -p "$CLAUDE_DIR/plugins" \
 echo "Installing settings, plugins, skills, and commands..."
 cp "$REPO_DIR/dotfiles/settings.json" "$CLAUDE_DIR/settings.json"
 
-# settings.json declares a statusLine pointing at this script, so the two must be
-# installed together or the status line silently breaks on a fresh machine.
+# settings.json's statusLine points at this script; install them together.
 if [ -f "$REPO_DIR/dotfiles/statusline-command.sh" ]; then
   cp "$REPO_DIR/dotfiles/statusline-command.sh" "$CLAUDE_DIR/statusline-command.sh"
   chmod +x "$CLAUDE_DIR/statusline-command.sh"
   command -v jq >/dev/null 2>&1 || echo "  note: the status line needs \`jq\` — install it with 'brew install jq'"
 fi
 
-# Use cp -R to copy the plugins, skills, and commands directories safely if they are not empty
-# NOTE: local-llm is skipped here on purpose. Copying it into ~/.claude/plugins
-# would make the local-qwen subagent active in every plain `claude` session,
-# which is exactly what this setup must not do. It is staged separately below.
+# local-llm is skipped on purpose: in ~/.claude/plugins it would be active in every
+# plain `claude` session. It is staged separately below.
 if [ -d "$REPO_DIR/claude_plugins/plugins" ] && [ "$(ls -A "$REPO_DIR/claude_plugins/plugins")" ]; then
   for plugin in "$REPO_DIR/claude_plugins/plugins/"*; do
     [ -d "$plugin" ] || continue
@@ -53,10 +50,7 @@ fi
 if [ -d "$REPO_DIR/claude_plugins/commands" ] && [ "$(ls -A "$REPO_DIR/claude_plugins/commands")" ]; then
   cp -R "$REPO_DIR/claude_plugins/commands/"* "$CLAUDE_DIR/commands/"
 fi
-# The local-llm plugin (local-qwen subagent + local-llm skill) is installed to a
-# staging directory, NOT to ~/.claude. Nothing there is active in a plain
-# `claude` session; `claude subagent` loads it per-session via
-# --plugin-dir. This is what keeps local models out of real Pro-plan work.
+# Staged outside ~/.claude/plugins; `claude subagent` loads it per-session via --plugin-dir.
 if [ -d "$REPO_DIR/claude_plugins/plugins/local-llm" ]; then
   echo "Installing opt-in local-llm plugin (not active in plain \`claude\`)..."
   mkdir -p "$CLAUDE_DIR/local-plugins"
@@ -81,10 +75,7 @@ python3 "$CLAUDE_DIR/claude_resume_daemon.py" install
 # 5. Install the local-LLM stack (llama-server manager, proxy, CLIs)
 echo "Installing local LLM tooling to $HOME/.local/bin..."
 mkdir -p "$HOME/.local/bin"
-# Symlink rather than copy. Copies go stale the moment this repo is updated, and the
-# failure is confusing rather than loud: PATH keeps running an old script while the repo
-# shows the new one, so a model alias added here produced "unknown model" from a
-# months-old copy. Symlinks cannot drift.
+# Symlink rather than copy, so PATH can never run a stale script.
 for tool in llm-serve llm-proxy.mjs qwen qwen-cli qwen-code openrouter-code claude-local-subagent; do
   ln -sfn "$REPO_DIR/scripts/$tool" "$HOME/.local/bin/$tool"
   chmod +x "$REPO_DIR/scripts/$tool"
@@ -95,18 +86,13 @@ echo "  installed: llm-serve, qwen, qwen-cli, qwen-code, openrouter-code, claude
 ZSHRC="$HOME/.zshrc"
 if [ -f "$ZSHRC" ]; then
   echo "Appending productivity aliases to $ZSHRC..."
-  # Replace an existing block rather than skipping it. The previous version guarded on
-  # `^claude() {` and skipped when found, so there was an install path but no *update*
-  # path: editing the snippet in this repo changed nothing in an already-installed
-  # shell, and the stale copy kept running. That is how a shell kept dispatching to a
-  # model alias this repo had already renamed.
+  # Replace an existing block rather than skipping it, so snippet edits reach installed shells.
   START="# --- Added by local-setup installer ---"
   END="# --------------------------------------"
   if grep -qF "$START" "$ZSHRC"; then
     echo "Updating existing local-setup block in $ZSHRC..."
     cp "$ZSHRC" "${ZSHRC}.bak-$(date +%Y%m%d-%H%M%S)"
-    # Rewrite between the markers, leaving everything else — notably anything that
-    # insists on being last, like the Kiro post block — exactly where it was.
+    # Rewrite only between the markers; anything that must stay last (Kiro) is untouched.
     awk -v start="$START" -v end="$END" -v snip="$REPO_DIR/dotfiles/zshrc_snippet" '
       $0 == start { print; while ((getline line < snip) > 0) print line; skip = 1; next }
       $0 == end && skip { skip = 0 }

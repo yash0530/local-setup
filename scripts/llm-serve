@@ -1,34 +1,22 @@
 #!/usr/bin/env bash
-# llm-serve — start/stop/switch the local Qwen stack (llama-server + Anthropic proxy).
+# llm-serve — start/stop/switch the local Qwen 3.8 27B stack (model server + Anthropic proxy).
 #
-# Serving flags come from the local_llm_bench sweep: the draft depth for each
-# model is the measured peak, not a guess.
-#
-#   llm-serve start [gguf5|gguf4|gguf6|gguf8|mlx4|splash4]
-#     default gguf5. gguf* are GGUF via llama-server; mlx4 is MLX (snappy shallow);
+#   llm-serve start [gguf5|gguf6|gguf8|splash4]
+#     default gguf5. gguf* are GGUFs on llama-server (MTP speculative decoding);
 #     splash4 is incoai/Qwen3.8-27B-Splash (4-bit + DFlash2) on LM Studio's Splash engine.
-#     (mlx6/mlx8 removed 2026-08-30 — disqualified on 64 GB: mlx6 kernel-panicked,
-#      mlx8 dead at 41K. GGUF serves 6/8-bit safely instead.)
-#     gguf5 is the recommended 27B daily driver (warm cache to ~200K, safe memory);
-#     see local_llm_bench/results/vacation-run/RECOMMENDATION.md for the full rationale
-#     and the mlx4/gguf8 trade-offs. (Qwen 3.6 35B A3B removed 2026-09-27.)
 #   llm-serve stop              stop everything
 #   llm-serve status            what's running, and whether it answers
 #   llm-serve restart [model]   stop then start (defaults to the resident model)
 #   llm-serve restart-proxy     reload just the proxy (keeps the model resident)
 #   llm-serve logs [server|proxy]  tail a log
 #   llm-serve which             the currently-loaded model
-#   llm-serve clean-disk        wipe the APC disk cache (see the disk tier below)
 
 set -euo pipefail
 
 STATE_DIR="${HOME}/.local/state/local-llm"
 LOG_DIR="${STATE_DIR}/logs"
-# KV slot cache. Cold prefill at deep context runs ~130-190 tok/s on the 27B GGUFs, so
-# a deep resume costs many minutes on a cache miss. --slot-save-path only enables the
-# /slots/{id}?action=save|restore endpoints; llama.cpp does not persist or
-# reload slots on its own, so nothing uses this until something calls them.
-# NOTE: --cache-reuse is a no-op on the hybrid Qwen3.8 arch (removed); see LLAMA_CACHE_RAM_MIB.
+# --slot-save-path target. It only enables the /slots save|restore endpoints;
+# llama.cpp never persists slots on its own.
 KV_DIR="${STATE_DIR}/kv"
 mkdir -p "$LOG_DIR" "$KV_DIR"
 
@@ -42,35 +30,15 @@ LLAMA_PORT="${LLAMA_PORT:-8089}"
 PROXY_PORT="${PROXY_PORT:-8790}"
 CTX="${LLM_CTX:-262144}"
 
-# Thinking is unlimited by default — these are reasoning models and the quality
-# comes from letting them finish. The proxy's SSE heartbeat is what keeps a long
-# reasoning phase from looking like a dead connection, so no cap is needed here.
-# Set LLM_THINK_BUDGET to a token count if you ever want to bound latency.
+# Unlimited thinking by default; the proxy's SSE heartbeat keeps long reasoning alive.
 THINK_BUDGET="${LLM_THINK_BUDGET:--1}"
 
-# llama.cpp prompt-cache budget (host RAM, MiB) for saved slot states. A saved state
-# for the Qwen 3.8 hybrid costs ~103 KB/token (attention KV + GatedDeltaNet conv/SSM
-# state across all 65 blocks), so the llama.cpp default of 8192 MiB silently caps warm
-# restore at ~79k tokens — past that the server logs "prompt state size ... exceeds
-# cache size limit ... skipping" and cold-reprefills the whole conversation (measured:
-# gguf4 lost warmth at B3/110k, 886 s re-prefill). 24576 MiB holds a single ~240k state
-# or three ~79k states, and it is HOST RAM, not GPU-wired, so it does not push toward the
-# iogpu limit. --cache-reuse was REMOVED: it is a no-op on this hybrid/recurrent arch
-# ("cache_reuse is not supported by this context" at startup); all warmth comes from
-# llama.cpp b10621+'s hybrid context checkpoints (verified 2026-08-29, STRESS-GGUF.md).
+# Host-RAM budget (MiB) for saved prompt states. A Qwen 3.8 hybrid state costs ~103 KB/token,
+# so llama.cpp's 8 GiB default silently drops warm restore past ~79k tokens.
 LLAMA_CACHE_RAM_MIB="${LLM_CACHE_RAM_MIB:-24576}"
 
-# Reasoning effort, passed to the proxy and forwarded on every request to every engine.
-# LLM_EFFORT=low|medium|xhigh. Default is "xhigh" (Qwen 3.8's own default), chosen
-# 2026-09-27 for answer quality over latency. The cost is real on the slower engines:
-# ~900-2000 reasoning tokens even for "what is up", which at ~14 tok/s is most of a
-# minute before the first visible token. `claude local ... --think medium` (or
-# LLM_EFFORT=medium) trims it back per session.
-#
-# Qwen 3.8's chat template has exactly three levels, and each maps to what the template
-# actually does: xhigh prepends a "think carefully, validate assumptions" instruction,
-# low prepends "keep your thinking brief", medium prepends nothing. Anything else is a
-# template error, so common spellings are normalised onto those three here.
+# Reasoning effort, forwarded by the proxy on every request. Qwen 3.8's template has
+# exactly three levels; anything else is a template error, so spellings are normalised.
 normalize_effort() { # effort -> low|medium|xhigh, or fail
   case "$(echo "${1:-}" | tr 'A-Z' 'a-z')" in
     xhigh|high|max|x-high|extra-high) echo xhigh ;;
@@ -81,96 +49,33 @@ normalize_effort() { # effort -> low|medium|xhigh, or fail
 }
 LLM_EFFORT="$(normalize_effort "${LLM_EFFORT:-xhigh}")" || exit 1
 
-# --- APC disk tier (MLX only) -------------------------------------------------
-# The in-RAM exact cache is bounded by ENTRY COUNT, not by bytes, and there is no
-# byte budget anywhere in apc.py. Each entry is a full deep-copied KV snapshot —
-# ~2.9 GB at a 44k-token working set — and every prefill stores TWO of them (see
-# the note above the launch line). A real Claude Code session issues several
-# requests per turn, so RAM capacity is spent in a handful of turns no matter how
-# high the count goes; 50-100 entries would be 150-300 GB on a 64 GB machine.
-#
-# The disk tier is the supported way past that ceiling. Evicted entries spill to
-# disk instead of being lost, and its restore path chunks its evals
-# (APC_DISK_EVAL_BLOCK_CHUNK) precisely because the unchunked in-memory one "has
-# crashed Apple Silicon hosts" — so it is also the *safer* of the two paths.
-#
-# DEFAULTS OFF, pending validation. The mechanism is sound on paper, but in the one run
-# that exercised it (3 turns, 18 requests, MTP off, 8 entries) it wrote 96 GB and served
-# ZERO reads: disk_hits=0, evictions=0. Nothing was ever evicted from the 8-entry RAM tier,
-# so the disk tier was pure write amplification — roughly 30 GB per turn of SSD wear for
-# no benefit. It only starts paying off once the RAM tier actually evicts, which needs
-# either a lower entry count or a longer session than has been measured.
-#
-# Set LLM_APC_DISK to a path to enable it, and watch disk_hits in /v1/cache/stats: if it
-# stays at 0, the tier is costing you writes for nothing.
-APC_DISK="${LLM_APC_DISK-}"
-# Bounded, NOT unbounded. APC_DISK_MAX_GB=0 means max_bytes=None, which makes the
-# eviction sweep return immediately (apc.py:1136) and the directory grow forever.
-# A real cap arms the LRU sweep: over the cap it evicts by mtime down to
-# _EVICT_LOW_WATERMARK (0.9), i.e. 120 GB -> ~108 GB, then keeps accepting.
-APC_DISK_GB="${LLM_APC_DISK_GB:-120}"
-# Before pulling a ~3 GB snapshot back into RAM, APC checks free RAM and skips the
-# restore (cold-prefilling instead) if it is below this. It is a swap guard, not a
-# size limit. Default in apc.py is 2.0, which is too tight next to a 15-28 GB model.
-APC_MIN_FREE_RAM_GB="${LLM_APC_MIN_FREE_RAM_GB:-8}"
-
-# The proxy lives next to this script.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROXY_JS="${SCRIPT_DIR}/llm-proxy.mjs"
 
-# --- model registry (Q8 GGUFs, MTP draft depth = benchmarked peak) ------------
-# Single list of valid aliases, used for validation, error messages, and recovering
-# which model a running server is serving.
-MODEL_ALIASES="mlx4 gguf8 gguf6 gguf5 gguf4 splash4"
+# --- model registry ------------------------------------------------------------
+MODEL_ALIASES="gguf8 gguf6 gguf5 splash4"
 
 model_path() {
   case "$1" in
-    mlx4) echo "${HOME}/Models/qwen3.8-27b-mlx-4bit" ;;
-    # unsloth GGUFs (inline MTP head — no separate drafter file needed)
+    # unsloth GGUFs (inline MTP head — no separate drafter file)
     gguf8) echo "${HOME}/Models/qwen3.8-27b-gguf/Qwen3.8-27B-Q8_0.gguf" ;;
     gguf6) echo "${HOME}/Models/qwen3.8-27b-gguf/Qwen3.8-27B-UD-Q6_K_XL.gguf" ;;
     gguf5) echo "${HOME}/Models/qwen3.8-27b-gguf/Qwen3.8-27B-UD-Q5_K_XL.gguf" ;;
-    gguf4) echo "${HOME}/Models/qwen3.8-27b-gguf/Qwen3.8-27B-UD-Q4_K_XL.gguf" ;;
-    # Not a file: Splash weights are fixed-layout binaries only LM Studio's Splash
-    # runtime can map, so this is an LM Studio model key. It is the virtual model from
-    # dotfiles/lmstudio/ (installed by ensure_splash_virtual_model), which wraps the
-    # downloaded weights and exposes the template's reasoning_effort — the bare download
-    # (key qwen3.8-27b-splash) makes LM Studio drop the field, pinning effort at xhigh.
+    # An LM Studio model key, not a file: the virtual model from dotfiles/lmstudio/, which
+    # exposes reasoning_effort (the bare download makes LM Studio drop that field).
     splash4) echo "local/qwen3.8-27b-splash" ;;
     *) return 1 ;;
   esac
 }
 
-# Which engine serves an alias. MLX beat llama.cpp at every matched size in the 3.8
-# sweep — by 10% at 8-bit and 54-59% at 6- and 4-bit — so these are served by
-# mlx_vlm.server rather than llama-server. The two paths share nothing but the port and
-# the `qwen-local` model name the proxy expects.
 model_engine() {
   case "$1" in
-    mlx4) echo "mlx" ;;
     splash4) echo "splash" ;;
     *) echo "llamacpp" ;;
   esac
 }
 
-# MLX speculation is a separate drafter checkpoint rather than a head inside the weights.
-# It is held at 8-bit no matter how the target is quantized, which is precisely why MLX
-# keeps ~49% acceptance at every size while llama.cpp's inline head decays with the model.
-model_draft() {
-  case "$1" in
-    mlx4) echo "${HOME}/Models/qwen3.8-27b-mtp-mlx-8bit" ;;
-    *) echo "" ;;
-  esac
-}
-
-# Python that has mlx_vlm installed. Defaults to the benchmark repo's venv; override with
-# LLM_MLX_PY if that repo moves.
-# .mlxenv-0617: mlx 0.32.2 + mlx-vlm 0.6.17 (ArraysCache Metal-leak fix, DFlash2/DSpark
-# drafters), latest-only patch applied 2026-08-28. Old .mlxenv (0.6.15) kept as fallback.
-MLX_PY="${LLM_MLX_PY:-${HOME}/Desktop/Programming/local_llm_bench/.mlxenv-0617/bin/python}"
-
-# LM Studio CLI, for the splash engine. `lms bootstrap` puts it on PATH, but a fresh
-# install only has it under ~/.lmstudio/bin, so fall back to that.
+# `lms bootstrap` puts lms on PATH, but a fresh install only has ~/.lmstudio/bin.
 LMS="${LLM_LMS:-$(command -v lms 2>/dev/null || echo "${HOME}/.lmstudio/bin/lms")}"
 SPLASH_CTX="${LLM_SPLASH_CTX:-$CTX}"
 # The downloaded weights the virtual model wraps, as `lms ls` names them.
@@ -178,8 +83,7 @@ SPLASH_BASE_NAME="Qwen3.8-27B-Splash"
 SPLASH_VIRTUAL_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/dotfiles/lmstudio/qwen3.8-27b-splash/model.yaml"
 SPLASH_VIRTUAL_DST="${HOME}/.lmstudio/hub/models/local/qwen3.8-27b-splash/model.yaml"
 
-# Keep LM Studio's copy of the virtual model in step with the repo. LM Studio indexes
-# ~/.lmstudio/hub/models on its own; a changed file is picked up on the next load.
+# Keep LM Studio's copy of the virtual model in step with the repo (picked up on next load).
 ensure_splash_virtual_model() {
   [[ -f "$SPLASH_VIRTUAL_SRC" ]] || { echo "missing $SPLASH_VIRTUAL_SRC" >&2; return 1; }
   if ! cmp -s "$SPLASH_VIRTUAL_SRC" "$SPLASH_VIRTUAL_DST"; then
@@ -189,35 +93,21 @@ ensure_splash_virtual_model() {
   fi
 }
 
-# Display name for a model alias.
-model_family() {
-  case "$1" in
-    mlx4|gguf8|gguf6|gguf5|gguf4|splash4) echo "qwen3.8" ;;
-    *) echo "qwen" ;;
-  esac
-}
+model_family() { echo "qwen3.8"; }
 
-# Qwen 3.8 asks for temp 1.0 in thinking mode. Kept per-alias so a future model with a
-# different recommendation isn't silently served at this one's value.
+# Qwen 3.8 wants temp 1.0 in thinking mode; per-alias so a future model can differ.
 model_temp() {
   case "$1" in
     *) echo 1.0 ;;
   esac
 }
 
-# Peak-throughput draft depth per model, measured over the sweep:
-#   27B: n=3 -> 19.8 tok/s (68% accept)
-# The `*)` default matters: without it an unknown alias yields an empty string and the
-# launch line becomes `--spec-draft-n-max ` with no value.
+# Measured per-quant MTP draft depth. The *) default matters: an empty value would leave
+# `--spec-draft-n-max` with no argument.
 draft_n() {
   case "$1" in
-    # Per-quant measured optima on the 27B GGUFs: gguf8 (Q8_0) peaks at 3, gguf6
-    # (UD-Q6_K_XL) at 4; gguf5/gguf4 stay at the *) default of 2.
     gguf8) echo 3 ;;
     gguf6) echo 4 ;;
-    # MLX draft_block_size, not a llama.cpp draft-n: the drafter proposes block_size - 1
-    # tokens, so 3 is the checkpoint's configured block and what the sweep measured.
-    mlx4) echo 3 ;;
     *) echo 2 ;;
   esac
 }
@@ -226,10 +116,8 @@ is_running() { # pidfile
   [[ -f "$1" ]] && kill -0 "$(cat "$1")" 2>/dev/null
 }
 
-# The pidfiles are a record, not the truth. An interrupted `start` — Ctrl-C
-# while the model loads, say — can leave a live daemon with no pidfile, after
-# which llm-serve reports "stopped", then tries to start a second one and hangs
-# on a port that is very much in use. Trust the listening socket over the file.
+# An interrupted `start` can leave a live daemon with no pidfile; trust the listening
+# socket over the file.
 adopt_orphan() { # port pidfile
   local pid
   pid="$(lsof -nP -iTCP:"$1" -sTCP:LISTEN -t 2>/dev/null | head -1)"
@@ -238,17 +126,14 @@ adopt_orphan() { # port pidfile
   echo "$pid" >"$2"
 }
 
-# Recover `current` from the running server's argv, since the model name is
-# right there in -m and losing it only makes `status` and `which` lie.
+# Recover `current` from the running server's argv so `status` and `which` don't lie.
 reconcile() {
   is_running "$SERVER_PID" || adopt_orphan "$LLAMA_PORT" "$SERVER_PID" || true
   is_running "$PROXY_PID" || adopt_orphan "$PROXY_PORT" "$PROXY_PID" || true
 
   if [[ ! -s "$CURRENT" ]] && is_running "$SERVER_PID"; then
-    # Match the running argv against the registry rather than parsing a model name out
-    # of the path. Two generations can share a size — qwen3.6-27b and qwen3.8-27b both
-    # contain "27b" — so a pattern match would recover an alias that serves the wrong
-    # model, while comparing against model_path() cannot.
+    # Compare against model_path() exactly; pattern-matching a size like "27b" could
+    # recover the wrong alias.
     local argv found=""
     argv="$(ps -o command= -p "$(cat "$SERVER_PID")" 2>/dev/null)"
     if [[ -n "$argv" ]]; then
@@ -258,9 +143,8 @@ reconcile() {
         path_="$(model_path "$alias_")" || continue
         if [[ "$argv" == *"$path_"* ]]; then found="$alias_"; break; fi
       done
-      # An LM Studio server on our port has no model path in its argv. Recognising it
-      # matters beyond `status`: stop_server must unload it through `lms` rather than
-      # SIGTERM the LM Studio process itself.
+      # LM Studio has no model path in argv. Recognising it matters: stop_server must
+      # unload through `lms` rather than SIGTERM the LM Studio app.
       if [[ -z "$found" ]]; then
         case "$argv" in *"LM Studio"*|*lmstudio*|*llmster*) found="splash4" ;; esac
       fi
@@ -269,23 +153,9 @@ reconcile() {
   fi
 }
 
-# Run a daemon in its own session, detached from the caller's process group.
-#
-# `nohup ... &` alone is not enough: nohup only ignores SIGHUP, while the child
-# stays in the invoking shell's process group. Anything that signals that group
-# — Ctrl-C, a closing terminal, a script killed on timeout — takes the daemon
-# with it. That is exactly how the proxy has died: orphaned into a dead group.
-#
-# macOS ships no setsid(1), so borrow it from perl, which is always present.
-# exec keeps the pid, so $! is still the daemon's own pid. setsid() failing
-# because we are already a group leader is fine — that means we are already
-# isolated, which is the whole point.
-#
-# Always call as `detach cmd ... &`. The trailing & forks a subshell, and the
-# exec below replaces *that* subshell — so $! is the daemon's own pid rather
-# than a bash wrapper that merely waits on it. Without the exec, the pidfile
-# records the wrapper, stop_pidfile kills the wrapper, and the real daemon is
-# orphaned still holding its port.
+# Run a daemon in its own session. nohup alone leaves it in the caller's process group,
+# so Ctrl-C or a closing terminal kills it. macOS has no setsid(1), so use perl.
+# Always call as `detach cmd ... &`: the exec keeps $! as the daemon's own pid.
 detach() { # cmd args...
   exec perl -e 'use POSIX (); POSIX::setsid(); exec @ARGV or die "exec failed: $!"' -- "$@"
 }
@@ -299,9 +169,7 @@ stop_pidfile() { # pidfile label
       kill -0 "$pid" 2>/dev/null || break
       sleep 0.2
     done
-    # SIGKILL is asynchronous: tearing down ~35 GB of Metal buffers takes the
-    # kernel a moment, and the fds (including the listening socket) are only
-    # released when the process actually reaps. Wait for that, don't assume it.
+    # SIGKILL is async: the listening socket is only released once the process reaps.
     if kill -0 "$pid" 2>/dev/null; then
       kill -9 "$pid" 2>/dev/null || true
       for _ in $(seq 1 50); do
@@ -313,8 +181,7 @@ stop_pidfile() { # pidfile label
   rm -f "$1"
 }
 
-# True while any TCP socket still holds the port — including orphaned TIME_WAIT
-# sockets, which belong to no process and so never show up in `lsof`.
+# True while any TCP socket holds the port, including TIME_WAIT sockets `lsof` can't see.
 port_in_use() { # port
   netstat -an -p tcp 2>/dev/null | awk -v suffix=".$1" '
     NR > 2 && length($4) > length(suffix) &&
@@ -322,11 +189,8 @@ port_in_use() { # port
     END { exit !found }'
 }
 
-# httplib (what llama-server binds with) sets SO_REUSEPORT on macOS, not
-# SO_REUSEADDR — so unlike most servers it cannot bind over a lingering
-# TIME_WAIT socket, and a switch fails with "couldn't bind HTTP server socket".
-# Stopping the proxy first (below) normally keeps :8089 clean, but a client that
-# died mid-request can still leave one behind. Wait it out rather than race it.
+# llama-server binds with SO_REUSEPORT, not SO_REUSEADDR, so it cannot bind over a
+# lingering TIME_WAIT socket. Wait it out rather than race it.
 wait_port_free() { # port
   port_in_use "$1" || return 0
   echo "  waiting for port $1 to clear"
@@ -341,7 +205,7 @@ wait_port_free() { # port
   return 1
 }
 
-# llama-server and mlx_vlm answer /health; LM Studio only has the OpenAI routes.
+# llama-server answers /health; LM Studio only has the OpenAI routes.
 health_url() {
   local cur; cur="$(cat "$CURRENT" 2>/dev/null || true)"
   if [[ -n "$cur" && "$(model_engine "$cur")" == "splash" ]]; then
@@ -351,8 +215,7 @@ health_url() {
   fi
 }
 
-# Stop whichever engine holds the model. Splash lives inside LM Studio, so killing the
-# pid on the port would take the app down with it; unload through `lms` instead.
+# Splash lives inside LM Studio, so killing the pid on the port would take the app down.
 stop_server() {
   local cur; cur="$(cat "$CURRENT" 2>/dev/null || true)"
   if [[ -n "$cur" && "$(model_engine "$cur")" == "splash" ]]; then
@@ -370,40 +233,21 @@ wait_healthy() {
   for _ in $(seq 1 300); do
     if curl -sf --max-time 5 "$url" >/dev/null 2>&1; then return 0; fi
     if ! is_running "$SERVER_PID"; then
-      echo "  llama-server died on startup — last lines:" >&2
+      echo "  model server died on startup — last lines:" >&2
       tail -20 "$SERVER_LOG" >&2
       return 1
     fi
     sleep 1
   done
-  echo "  timed out waiting for llama-server to become healthy" >&2
+  echo "  timed out waiting for the model server to become healthy" >&2
   return 1
 }
 
-start_proxy() { # [model_name_for_upstream]
+start_proxy() {
   if is_running "$PROXY_PID"; then return 0; fi
-  # llama-server is told `-a qwen-local`, so it answers to that name whatever the file
-  # is called. mlx_vlm.server has no such alias: it treats the request's `model` field
-  # as something to load, so an unknown name sends it to Hugging Face looking for a repo
-  # called "qwen-local" and the request fails with a 401. MLX therefore has to be
-  # addressed by the path it was loaded from.
-  # Derive it rather than requiring the caller to pass it: `restart-proxy` has no model
-  # argument, and defaulting to "qwen-local" there sent MLX requests to Hugging Face
-  # looking for a repo by that name. The resident model is recorded in $CURRENT.
-  local upstream_model="${1:-}"
-  if [[ -z "$upstream_model" ]]; then
-    local cur; cur="$(cat "$CURRENT" 2>/dev/null || true)"
-    if [[ -n "$cur" && "$(model_engine "$cur")" == "mlx" ]]; then
-      upstream_model="$(model_path "$cur")"
-    else
-      upstream_model="qwen-local"
-    fi
-  fi
-  # The model reasons on every turn regardless; `native` means Claude Code
-  # renders that phase in its own thinking UI instead of the stream just going
-  # quiet for a minute. Verified: the harness parses the blocks and keeps the
-  # signature. THINK_VIEW=off|status|text to change it — see the proxy header.
-  MODEL="$upstream_model" \
+  # Both engines serve the model as `qwen-local`. THINK_VIEW=native renders reasoning in
+  # Claude Code's own thinking UI; off|status|text are the alternatives.
+  MODEL="qwen-local" \
   UPSTREAM="http://127.0.0.1:${LLAMA_PORT}/v1" \
   PORT="${PROXY_PORT}" \
   THINK_VIEW="${THINK_VIEW:-native}" \
@@ -430,7 +274,7 @@ cmd_start() {
   if [[ "$(model_engine "$model")" == "splash" ]]; then
     if [[ ! -x "$LMS" ]]; then
       echo "LM Studio CLI not found (looked for lms on PATH and ${HOME}/.lmstudio/bin/lms)" >&2
-      echo "install LM Studio, run ~/.lmstudio/bin/lms bootstrap, then enable Settings > Runtime > Splash (Metal)" >&2
+      echo "install LM Studio, run ~/.lmstudio/bin/lms bootstrap, then: lms runtime get splash" >&2
       exit 1
     fi
     if ! "$LMS" ls 2>/dev/null | grep -qiF "$SPLASH_BASE_NAME"; then
@@ -438,19 +282,13 @@ cmd_start() {
       echo "download it first:  lms get https://huggingface.co/incoai/Qwen3.8-27B-Splash" >&2
       exit 1
     fi
-  # GGUF models are a single file; MLX models are a directory of shards.
-  elif [[ ! -f "$path" && ! -d "$path" ]]; then
+  elif [[ ! -f "$path" ]]; then
     echo "model not found: $path" >&2
     echo "download it first — see local-setup/README.md section 5.2" >&2
     exit 1
   fi
-  if [[ "$(model_engine "$model")" == "mlx" && ! -x "$MLX_PY" ]]; then
-    echo "no mlx_vlm interpreter at $MLX_PY" >&2
-    echo "set LLM_MLX_PY to a python that has mlx_vlm installed" >&2
-    exit 1
-  fi
 
-  # Only one model fits in 64 GB at Q8, so switching means replacing.
+  # Only one model fits in 64 GB, so switching means replacing.
   if is_running "$SERVER_PID"; then
     local cur; cur="$(cat "$CURRENT" 2>/dev/null || echo '?')"
     if [[ "$cur" == "$model" ]]; then
@@ -459,12 +297,8 @@ cmd_start() {
       return 0
     fi
     echo "switching ${cur} -> ${model}"
-    # Order matters. The proxy holds keep-alive connections to llama-server, and
-    # whichever side closes first is the side that lands in TIME_WAIT. Killing
-    # the server first strands those sockets on :${LLAMA_PORT} and the
-    # replacement cannot bind; closing the proxy first puts them on the proxy's
-    # ephemeral ports instead, leaving :${LLAMA_PORT} free. It gets restarted at
-    # the end of this function.
+    # Stop the proxy first: whichever side closes a keep-alive connection lands in
+    # TIME_WAIT, and it must not be the server's port.
     stop_pidfile "$PROXY_PID" "proxy"
     stop_server
   fi
@@ -472,10 +306,7 @@ cmd_start() {
   wait_port_free "$LLAMA_PORT" || exit 1
 
   if [[ "$(model_engine "$model")" == "splash" ]]; then
-    # The DFlash2 drafter ships inside the model and the runtime picks it up itself,
-    # so there is no draft flag, APC knob or mlock here — LM Studio owns all of that.
-    # Sampling is per-request: the proxy forwards Claude Code's temperature, and
-    # reasoning_effort rides along on every request exactly as for the other engines.
+    # LM Studio owns the drafter and mlock; sampling and reasoning_effort come per-request.
     ensure_splash_virtual_model || exit 1
     echo "starting $(model_family "$model")-${model} (LM Studio Splash, ctx ${SPLASH_CTX})"
     "$LMS" server start --port "$LLAMA_PORT" >"$SERVER_LOG" 2>&1 || {
@@ -485,7 +316,7 @@ cmd_start() {
       --gpu max -y >>"$SERVER_LOG" 2>&1 || {
       echo "  lms load failed:" >&2; tail -20 "$SERVER_LOG" >&2
       "$LMS" server stop >/dev/null 2>&1 || true; rm -f "$CURRENT"; exit 1; }
-    # Record the listener so is_running/status work the same as for the other engines.
+    # Record the listener so is_running/status work as for llama-server.
     lsof -nP -iTCP:"$LLAMA_PORT" -sTCP:LISTEN -t 2>/dev/null | head -1 >"$SERVER_PID"
     wait_healthy || exit 1
     echo "  LM Studio (Splash) up on http://127.0.0.1:${LLAMA_PORT}  (OpenAI API)"
@@ -493,15 +324,8 @@ cmd_start() {
     return
   fi
 
-  # LLM_SPEC=0 serves without speculative decoding — useful for benchmarking, or
-  # if a draft head ever misbehaves. Measured: it does NOT change the first-turn
-  # prefill cost, which is bounded by prompt processing, not generation.
-  # A 27-38 GB model on a 64 GB machine leaves little headroom, and macOS will
-  # happily compress/evict model pages when Spotlight, contactsd and friends get
-  # busy. Generation barely notices, but prefill sweeps every weight in large
-  # batches, so it collapses — measured here from 196 tok/s to 4 tok/s on an
-  # otherwise idle server. mlock pins the weights so that cannot happen.
-  # LLM_MLOCK=0 to opt out.
+  # --mlock: without it macOS evicts model pages under pressure and prefill collapses
+  # (measured 196 -> 4 tok/s). LLM_MLOCK=0 opts out; LLM_SPEC=0 disables MTP.
   local mlock=(--mlock)
   [[ "${LLM_MLOCK:-1}" == "0" ]] && mlock=()
 
@@ -512,195 +336,8 @@ cmd_start() {
     spec_label="MTP off"
   fi
 
-  if [[ "$(model_engine "$model")" == "mlx" ]]; then
-    local mlx_spec=()
-    local draft; draft="$(model_draft "$model")"
-    local mlx_label="MTP off"
-    # MTP defaulted OFF on MLX after the four panics documented below; since 2026-08-22
-    # it defaults back to ON — see the UPDATE note at the end of this block.
-    #
-    # DO NOT set LLM_SPEC=1 while APC is enabled. Four kernel panics, every one of them
-    # with the drafter and the prompt cache active together:
-    #
-    #   40 entries  "pending memory object unexpectedly found in non pending hash"
-    #                @IOGPUGroupMemory.cpp:528
-    #   10 entries  same assertion, with 13 GB free
-    #    8 entries  "completeMemory() prepare count underflow" @IOGPUMemory.cpp:550,
-    #                with 17 GB free and server RSS flat at 15.6 GB — the model size
-    #    4 entries  same :550 assertion, WITH the disk tier and WITH the store-side
-    #                mx.eval chunked (scripts/apply-mlx-patches). Died in 11 minutes.
-    #
-    # Three things have now been falsified as the dial: the entry count (40/10/8/4 all
-    # panic), memory pressure (never close to exhausted), and the unchunked store-side
-    # eval (chunking it did not help, so that patch was reverted). The one factor present
-    # in all four and absent from every stable run is the DRAFTER.
-    #
-    # Mechanically that fits: MTP is not just extra memory (it shares the target's KV via
-    # set_shared_kv, so it adds almost no snapshot cost). It MUTATES the cache —
-    # _buffer_mtp_target_cache swaps cache objects (speculative/utils.py:257) and each
-    # verify round rolls GDN state back — while APC concurrently deep-copies and mx.evals
-    # those same objects. Two subsystems retaining and releasing the same GPU buffers is
-    # exactly how you get a refcount underflow, which is what :550 asserts on.
-    #
-    # To use the drafter you must disable the cache entirely: LLM_APC=0 LLM_SPEC=1.
-    #
-    # That is a worse trade than it looks, and the measurement is worth keeping because it
-    # is the opposite of what the cold-cache benchmarks in local_llm_bench imply. Measured
-    # here at ~30-40k context on mlx4:
-    #
-    #            warm decode   cold decode   prefill(warm)   prefill(cold)
-    #   MTP on    19.9 tok/s    21.4 tok/s        ~2s            ~85s
-    #   MTP off    9.2 tok/s    15.2 tok/s        ~2s            ~85s
-    #
-    # MTP is worth ~2.16x in the WARM state that real work runs in — far more than the
-    # 1.26x the bench suite reports, because that suite only ever measures cold caches
-    # (bench_mlx.py:21 asserts cached_tokens == 0). But you cannot have it with the cache,
-    # and the cache is worth more: a typical ~200-token request costs ~24s with APC and no
-    # drafter, versus ~94s with the drafter and no cache. Caching wins below ~1300
-    # generated tokens per request, which is nearly every Claude Code request.
-    #
-    # UPDATE 2026-08-22: the DRAFTER-only theory is now falsified too. With
-    # APC_EXACT_CACHE_ENTRIES=2 (not 4–40), apply-latest-only-patch removing the dead
-    # full-prompt store (one multi-GB copy per cold prefill instead of two), and
-    # llm-proxy.mjs stripVolatile also covering the periodic task-tools nudge,
-    # MTP+APC together ran a full multi-turn Claude Code session — 14 turns, zero
-    # panics, median turn 41s / best 9s vs 134s / 42s without the drafter
-    # (local_llm_bench/results/overnight/). What the four panics needed was churn
-    # volume: many live snapshots × two copies each. Entries=2 plus checkpoint-only
-    # stores cuts both axes. So LLM_SPEC now defaults to 1 alongside APC; set
-    # LLM_SPEC=0 for cache-only.
-    # LLM_DRAFT overrides the drafter weights dir (an alternate MTP drafter checkpoint);
-    # LLM_DRAFT_KIND picks the family ('mtp' default; 'auto' omits the flag so the
-    # server detects it from the drafter's model_type — needed for DSpark/DFlash2,
-    # whose kinds aren't in 0.6.17's --draft-kind enum).
-    draft="${LLM_DRAFT:-$draft}"
-    local draft_kind="${LLM_DRAFT_KIND:-mtp}"
-    if [[ -d "$draft" && "${LLM_SPEC:-1}" == "1" ]]; then
-      if [[ "$draft_kind" == "auto" ]]; then
-        mlx_spec=(--draft-model "$draft"
-                  --draft-block-size "$(draft_n "$model")")
-      else
-        mlx_spec=(--draft-model "$draft" --draft-kind "$draft_kind"
-                  --draft-block-size "$(draft_n "$model")")
-      fi
-      mlx_label="drafter=$(basename "$draft") kind=${draft_kind} block=$(draft_n "$model")"
-    fi
-    # --enable-thinking is not optional for this model. Without it the server leaves
-    # thinking off for requests that do not set `enable_thinking` themselves, the chat
-    # template emits a pre-closed <think></think>, and Qwen 3.8 answers with no reasoning
-    # at all — while llama-server --jinja reasons by default. The same class of silent
-    # divergence cost a 10h rerun in the benchmark harness. Note the request field is
-    # top-level `enable_thinking`; mlx_vlm ignores the `chat_template_kwargs` that
-    # llm-proxy.mjs sends, so the server default is what actually decides this.
-    #
-    # mlx_vlm.server rejects thinking_budget together with a drafter
-    # ("thinking_budget is not supported with speculative decoding in the server").
-    # -1 means unlimited, which is the server's own default, so in the normal case the
-    # flag is simply unnecessary. A real budget alongside speculation cannot be honoured,
-    # so say so rather than failing every request at generation time.
-    local mlx_think=()
-    if [[ "$THINK_BUDGET" != "-1" ]]; then
-      if [[ ${#mlx_spec[@]} -gt 0 ]]; then
-        echo "  note: LLM_THINK_BUDGET is ignored on MLX while MTP is on (engine limitation);" >&2
-        echo "        set LLM_SPEC=0 to use a thinking budget instead" >&2
-      else
-        mlx_think=(--thinking-budget "$THINK_BUDGET")
-      fi
-    fi
-    local apc_label="APC off"
-    if [[ "${LLM_APC:-1}" != "0" ]]; then
-      apc_label="APC ${LLM_APC_ENTRIES:-2} entries"
-      [[ -n "$APC_DISK" ]] && apc_label="${apc_label} + disk ${APC_DISK_GB}GB"
-    fi
-    echo "starting $(model_family "$model")-${model} (MLX, ${mlx_label}, ${apc_label}, think budget ${THINK_BUDGET})"
-    # APC_ENABLED defaults to "0" inside mlx_vlm, so prompt caching is off unless this is
-    # set — a detail that silently invalidated a whole warm-cache measurement on 3.6.
-    # KV stays unquantized: quantized KV plus MTP crashes this architecture at depth.
-    # This is a hybrid model, so APC runs in "exact" mode: whole-conversation snapshots,
-    # and crucially there is NO partial-prefix reuse — a stored entry must be a strict
-    # prefix of the new prompt or it contributes nothing (apc.py:3020).
-    #
-    # Each prefill stores TWO entries: the full prompt, plus a checkpoint 16 tokens
-    # earlier (APC_EXACT_PREFIX_GUARD_TOKENS). The checkpoint is what actually carries a
-    # conversation forward, because turn N's prompt ends with the assistant generation
-    # header and turn N+1 re-renders that turn differently — the full entry always fails,
-    # the checkpoint survives.
-    #
-    # So the entry count buys HALF as much history as it looks like: the old default of 2
-    # held one request, and 6 held three. Claude Code spends that in a single turn — every
-    # tool call and every background recap is another request — so the conversation was
-    # evicted before the follow-up arrived and each turn paid a full ~60s cold prefill.
-    # Measured with three interleaved requests: 46.2s at 6 entries, 1.3s at 40.
-    #
-    # But the count is bounded by RAM, not by how much history would be nice to have,
-    # and NOTHING in apc.py enforces that bound — there is no byte budget, no high-water
-    # mark, and stats_snapshot()["resident_bytes"] reports 0 in exact mode because it
-    # walks only the block pool (apc.py:3456). RSS is the only honest signal.
-    #
-    # Each snapshot is a real KV allocation: 16 full-attention layers x 4 KV heads x 256
-    # dim x 2 for K+V x 2 bytes = 64 KB per token, plus ~72 MB of fixed recurrent state
-    # for the 48 GatedDeltaNet layers. That is ~1.5 GB at 24k tokens — but a real Claude
-    # Code session runs at 44-47k, where it is ~2.9 GB.
-    #
-    # APC is ON, capped at 8 entries. Twice it panicked the kernel — "pending memory
-    # object unexpectedly found in non pending hash" @IOGPUGroupMemory.cpp:528, the same
-    # fault both times, at 40 entries and again at 10 with 13 GB still free. That rules
-    # out simple exhaustion: it is an assertion inside Apple's GPU memory manager, i.e. a
-    # driver defect that userspace should not be able to reach at all. What reaches it is
-    # allocation churn, and the exact-store path is the least disciplined code in APC —
-    # the server clones a snapshot twice on store (ar.py:2083 then apc.py:3132), a hit
-    # allocates a THIRD copy padded up to a 256-token boundary (apc.py:3109-3112), and the
-    # whole thing is mx.eval'd unchunked (apc.py:319-321). That is ~6-9 GB of transient
-    # large-buffer churn per request. The measurement that made 40 look free was invalid:
-    # every test request shared a single prefix, so the snapshots shared storage and RSS
-    # never moved. Any change to this number must be measured with DISTINCT conversations.
-    #
-    # The count turned out NOT to be the dial — see the drafter note above; it panicked at
-    # 40, 10 and 8 alike, and the only stable configuration had MTP off. 6 is kept anyway
-    # because the disk tier makes the RAM count nearly free to lower: an evicted entry now
-    # costs a disk restore rather than a ~70s cold prefill, so there is no reason to sit on
-    # an untested number. The disk tier, not this count, is how you hold more history.
-    #
-    # LLM_APC=0 disables it, LLM_APC_ENTRIES sets the count. Note that 0 and -1 both mean
-    # DISABLED, not unlimited: apc.py:2868 is max(0, int(env)) and <= 0 is checked in four
-    # places as off. There is no unlimited value.
-    #
-    # These are exported rather than used as a `VAR=x cmd` prefix because `detach` is a
-    # shell function — `env` cannot invoke one, and an assignment prefix has to be literal
-    # at parse time, so a conditional set of disk vars cannot be spelled that way.
-    export APC_ENABLED="${LLM_APC:-1}"
-    # 2 entries = the proven-stable count (see the MTP block above): one live slot plus
-    # one history slot for interleaved requests. apply-latest-only-patch makes each
-    # cold prefill store only the checkpoint, so N entries hold N distinct states.
-    export APC_EXACT_CACHE_ENTRIES="${LLM_APC_ENTRIES:-2}"
-    # The full-prompt entry can never match a continuation; skipping it halves per-cold
-    # GPU copy churn. Patch default is skip=1; exported here so LLM_APC_SKIP_FULL_STORE=0
-    # restores upstream behaviour without touching the venv.
-    export APC_SKIP_FULL_STORE="${LLM_APC_SKIP_FULL_STORE:-1}"
-    if [[ -n "$APC_DISK" ]]; then
-      mkdir -p "$APC_DISK"
-      export APC_DISK_PATH="$APC_DISK"
-      export APC_DISK_MAX_GB="$APC_DISK_GB"
-      export APC_DISK_MIN_FREE_RAM_GB="$APC_MIN_FREE_RAM_GB"
-    fi
-    detach "$MLX_PY" -m mlx_vlm.server \
-      --model "$path" \
-      ${mlx_spec[@]+"${mlx_spec[@]}"} \
-      ${mlx_think[@]+"${mlx_think[@]}"} \
-      --enable-thinking \
-      --host 127.0.0.1 --port "${LLAMA_PORT}" \
-      >"$SERVER_LOG" 2>&1 &
-    echo $! >"$SERVER_PID"
-    echo "$model" >"$CURRENT"
-    wait_healthy || exit 1
-    echo "  mlx_vlm.server up on http://127.0.0.1:${LLAMA_PORT}  (OpenAI API)"
-    start_proxy "$path"
-    return
-  fi
-
-  echo "starting $(model_family "$model")-${model} (Q8, ${spec_label}, ctx ${CTX}, think budget ${THINK_BUDGET})"
-  # ${a[@]+"${a[@]}"}, not "${a[@]}": macOS ships bash 3.2, where expanding an
-  # empty array under `set -u` is an unbound-variable error.
+  echo "starting $(model_family "$model")-${model} (llama.cpp, ${spec_label}, ctx ${CTX}, think budget ${THINK_BUDGET})"
+  # ${a[@]+"${a[@]}"}: macOS bash 3.2 errors on an empty array under `set -u`.
   detach llama-server \
     -m "$path" \
     ${spec[@]+"${spec[@]}"} \
@@ -738,7 +375,6 @@ cmd_status() {
     local rss
     rss="$(ps -o rss= -p "$(cat "$SERVER_PID")" | awk '{printf "%.1f GB", $1/1048576}')"
     local eng="llama-server"
-    [[ "$(model_engine "$model")" == "mlx" ]] && eng="mlx_vlm.serv"
     [[ "$(model_engine "$model")" == "splash" ]] && eng="lmstudio    "
     echo "${eng}  running   model=$(model_family "$model")-${model}  port=${LLAMA_PORT}  rss=${rss}"
   else
@@ -754,8 +390,7 @@ cmd_status() {
     echo "proxy         stopped"
   fi
 
-  # --max-time matters: with -np 1 a long generation occupies the only slot, and
-  # an un-timed curl would hang `status` itself instead of reporting the state.
+  # --max-time: with -np 1 a long generation holds the only slot and would hang `status`.
   if curl -sf --max-time 5 "$(health_url)" >/dev/null 2>&1; then
     echo "health        ok"
   else
@@ -766,40 +401,16 @@ cmd_status() {
 case "${1:-status}" in
   start)   shift; cmd_start "${1:-gguf5}" ;;
   stop)    cmd_stop ;;
-  # Read $CURRENT BEFORE cmd_stop, which deletes it. A fixed default here once meant a
-  # bare `LLM_APC=0 llm-serve restart` silently swapped a resident MLX model for a 37 GB
-  # GGUF — and since APC and the drafter are MLX-only, every flag you were restarting to
-  # change became a no-op at the same time. The fallback only applies when nothing is
-  # resident.
+  # Read $CURRENT before cmd_stop deletes it, so a bare restart keeps the resident model.
   restart)
     shift
     _want="${1:-$(cat "$CURRENT" 2>/dev/null || echo gguf5)}"
     cmd_stop; cmd_start "$_want" ;;
-  # Picking up a proxy edit shouldn't cost a 37 GB model reload.
   restart-proxy)
     stop_pidfile "$PROXY_PID" "proxy"
     start_proxy ;;
   status)  cmd_status ;;
   which)   cat "$CURRENT" 2>/dev/null || echo "nothing loaded" ;;
-  # Nothing in mlx_vlm ever removes these files: clear() (apc.py:3478) touches only the
-  # in-RAM pool and close() (:3495) just stops the writer thread. The 120 GB cap keeps the
-  # directory bounded on its own, so this is for reclaiming the space on demand or for
-  # forcing genuinely cold prefills when measuring.
-  clean-disk)
-    # Fall back to the conventional path when the tier is disabled, so leftovers from a
-    # session that HAD it enabled are still reclaimable — that is exactly when someone
-    # reaches for this command.
-    [[ -z "$APC_DISK" ]] && APC_DISK="${STATE_DIR}/apc-disk"
-    if [[ -d "$APC_DISK" ]]; then
-      sz="$(du -sh "$APC_DISK" 2>/dev/null | cut -f1)"
-      # Leave the directory itself in place: the server may be running and holds the path
-      # it was launched with, and DiskBlockStore._ensure_dir() only recreates it lazily.
-      rm -rf "${APC_DISK:?}"/* 2>/dev/null || true
-      echo "cleared APC disk cache at $APC_DISK (reclaimed ${sz:-0})"
-      is_running "$SERVER_PID" && echo "  note: server is running and may still hold entries in RAM" || true
-    else
-      echo "no APC disk cache at $APC_DISK"
-    fi ;;
   logs)
     case "${2:-server}" in
       proxy)  tail -f "$PROXY_LOG" ;;
@@ -811,6 +422,6 @@ case "${1:-status}" in
         tail -f "$SERVER_LOG" ;;
     esac ;;
   *)
-    grep '^#' "$0" | sed -n '2,20p' | sed 's/^# \?//'
+    grep '^#' "$0" | sed -n '2,12p' | sed 's/^# \?//'
     exit 1 ;;
 esac
