@@ -151,6 +151,11 @@ async function searchDuckDuckGo(query, n) {
   });
   if (!r.ok) throw new Error(`duckduckgo returned HTTP ${r.status}`);
   const html = await r.text();
+  // A bot-check page has no results either; reporting it as "No results" sends the
+  // model off retrying reworded queries against the same block.
+  if (r.status === 202 || /anomaly-modal|bots use DuckDuckGo/i.test(html)) {
+    throw new Error("duckduckgo served a bot check; set SEARCH_BACKEND=brave with BRAVE_API_KEY");
+  }
 
   const titles = [];
   const titleRe = /<a[^>]+class="result__a"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/g;
@@ -365,22 +370,20 @@ function stripVolatile(text) {
 function convertMessages(anthropicMessages, systemText) {
   const out = [];
 
-  // Qwen 3.8's template rejects a system message after index 0, so hoist every piece
-  // of system content into one leading message.
-  const systemParts = [];
-  if (systemText) systemParts.push(systemText);
-  for (const msg of anthropicMessages || []) {
-    if (msg.role !== "system") continue;
-    const t = typeof msg.content === "string" ? msg.content
-      : Array.isArray(msg.content) ? blocksToText(msg.content) : "";
-    if (t) systemParts.push(t);
-  }
-  if (systemParts.length) {
-    out.push({ role: "system", content: stripVolatile(systemParts.join("\n\n")) });
-  }
+  if (systemText) out.push({ role: "system", content: stripVolatile(systemText) });
 
   for (const msg of anthropicMessages || []) {
-    if (msg.role === "system") continue;   // already hoisted above
+    // Claude Code appends a `system` message after each turn (env, date, reminders)
+    // and keeps it in history. Qwen 3.8's template rejects a system message after
+    // index 0, and hoisting it into the leading one would change the top of the prompt
+    // every turn and force a full re-prefill. Keep it in place as a user reminder so
+    // the prompt only ever grows at the end.
+    if (msg.role === "system") {
+      const t = stripVolatile(typeof msg.content === "string" ? msg.content
+        : Array.isArray(msg.content) ? blocksToText(msg.content) : "");
+      if (t) out.push({ role: "user", content: `<system-reminder>\n${t}\n</system-reminder>` });
+      continue;
+    }
     const content = msg.content;
 
     if (typeof content === "string") {
