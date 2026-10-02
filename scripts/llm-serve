@@ -22,6 +22,7 @@ PROXY_PID="${STATE_DIR}/proxy.pid"
 CURRENT="${STATE_DIR}/current"
 SERVER_LOG="${LOG_DIR}/server.log"
 PROXY_LOG="${LOG_DIR}/proxy.log"
+BRAVE_KEY_FILE="${HOME}/.config/local-llm/brave_api_key"
 
 LLAMA_PORT="${LLAMA_PORT:-8089}"
 PROXY_PORT="${PROXY_PORT:-8790}"
@@ -196,8 +197,18 @@ wait_healthy() {
 
 start_proxy() {
   if is_running "$PROXY_PID"; then return 0; fi
+  # WebSearch uses Brave when a key is on file. The key lives outside this repo, and
+  # an exported BRAVE_API_KEY or SEARCH_BACKEND still wins.
+  local brave_key="${BRAVE_API_KEY:-}"
+  if [[ -z "$brave_key" && -r "$BRAVE_KEY_FILE" ]]; then
+    brave_key="$(tr -d '[:space:]' <"$BRAVE_KEY_FILE")"
+  fi
+  local search_backend="${SEARCH_BACKEND:-}"
+  if [[ -z "$search_backend" && -n "$brave_key" ]]; then search_backend=brave; fi
   # LM Studio serves the model as `qwen-local`. THINK_VIEW=native renders reasoning in
   # Claude Code's own thinking UI; off|status|text are the alternatives.
+  BRAVE_API_KEY="$brave_key" \
+  SEARCH_BACKEND="$search_backend" \
   MODEL="qwen-local" \
   UPSTREAM="http://127.0.0.1:${LLAMA_PORT}/v1" \
   PORT="${PROXY_PORT}" \
