@@ -39,8 +39,9 @@ is worthless.
   with the full HF URL (`lms get https://huggingface.co/<org>/<repo>`).
 
 Gate each engine with a 5-minute smoke before downloading the full quant ladder. Wire
-new aliases into `scripts/llm-serve` (`MODEL_ALIASES`, `model_path`, `model_engine`,
-`model_temp`, `draft_n`), `scripts/qwen-cli`, and the `claude()` dispatcher in
+new aliases into `scripts/llm-serve` (`MODEL_ALIASES`, `model_key`; it is LM Studio-only
+since the GGUF/llama.cpp path was removed on 2026-10-01 — restore it from git history
+for a llama.cpp model), `scripts/qwen-cli`, and the `claude()` dispatcher in
 `dotfiles/zshrc_snippet`. Take sampling params (temp/top-p) from the model card —
 serving at another model's temp is a silent quality bug. If LM Studio drops a request
 field the template needs (as with `reasoning_effort`), add a virtual model under
@@ -119,6 +120,6 @@ reasoning delivers thin answers at real latency cost.
 | Config | Warm follow-up | Decode | Deepest verified recall |
 |---|---|---|---|
 | splash4 (LM Studio Splash, DFlash2) | **1–2 s** (97–99% cached) | 35–84 t/s | **227,078** tokens (stopped at 44.8 GB wired) |
-| gguf5 (llama.cpp, MTP n=2) | ~8 s | ~13–20 t/s | 158,766 tokens |
+| gguf5 (llama.cpp, MTP n=2; removed 2026-10-01) | ~8 s | ~13–20 t/s | 158,766 tokens |
 
 A new model should beat the relevant row or it isn't worth switching.

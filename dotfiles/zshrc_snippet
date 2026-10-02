@@ -8,9 +8,9 @@ alias agy="agy --dangerously-skip-permissions"
 # `command claude` bypasses it, so it does not recurse.
 #   claude                                    Pro subscription (default)
 #   claude open_router [ox_alpha|<model>]     OpenRouter (defaults to stealth/ox-alpha)
-#   claude local qwen38_27 [--bits 4|5|6|8] [--think xhigh|medium|low]
-#                                             Qwen 3.8 27B (default bits 5, think xhigh;
-#                                             --bits 4 runs on LM Studio's Splash engine)
+#   claude local qwen38_27 [--think xhigh|medium|low]
+#                                             Qwen 3.8 27B Splash 4-bit on LM Studio
+#                                             (default think xhigh)
 #   claude local [--think xhigh|medium|low]   whatever model is already resident
 #   claude subagent                           Pro + the opt-in local delegation subagent
 # Every branch forwards "$@", so flags survive: `claude -p "..."`,
@@ -38,33 +38,21 @@ claude() {
       shift
       case "${1:-}" in
         qwen38_27|qwen38_27b)
-          # --bits 4 = LM Studio Splash; 5/6/8 = llama.cpp GGUF. qwen-code normalises
-          # --think and restarts only the proxy if a running stack is at another level.
+          # qwen-code normalises --think and restarts only the proxy if a running stack
+          # is at another level.
           shift
-          local _bits=5 _think=xhigh
+          local _think=xhigh
           while true; do
             case "${1:-}" in
-              --bits)   _bits="${2:-5}"; shift 2 ;;
               --think)  _think="${2:-xhigh}"; shift 2 ;;
               *) break ;;
             esac
           done
-          local _m
-          case "$_bits" in
-            8) _m=gguf8 ;;
-            6) _m=gguf6 ;;
-            5) _m=gguf5 ;;
-            4)
-              if ! command -v lms >/dev/null 2>&1 && [[ ! -x "$HOME/.lmstudio/bin/lms" ]]; then
-                echo "claude local qwen38_27: --bits 4 runs on LM Studio's Splash engine, which is not installed" >&2
-                echo "  install LM Studio (see README §5.0), or use --bits 5|6|8" >&2
-                return 1
-              fi
-              _m=splash4
-              ;;
-            *) echo "claude local qwen38_27: --bits must be 4, 5, 6 or 8" >&2; return 1 ;;
-          esac
-          qwen-code --model "$_m" --think "$_think" "$@"
+          if ! command -v lms >/dev/null 2>&1 && [[ ! -x "$HOME/.lmstudio/bin/lms" ]]; then
+            echo "claude local qwen38_27: needs LM Studio's Splash engine, which is not installed (see README §5.1)" >&2
+            return 1
+          fi
+          qwen-code --model splash4 --think "$_think" "$@"
           ;;
         # Fail loudly on an unknown word: forwarding it would make it the session's
         # first prompt.
@@ -72,7 +60,7 @@ claude() {
         -*|"")     qwen-code --think xhigh "$@" ;;
         *)
           echo "claude local: unknown model '$1'" >&2
-          echo "  expected: qwen38_27 [--bits 4|5|6|8] [--think xhigh|medium|low]" >&2
+          echo "  expected: qwen38_27 [--think xhigh|medium|low]" >&2
           echo "  (if this name looks right, run: source ~/.zshrc)" >&2
           return 1
           ;;
@@ -88,12 +76,12 @@ alias claude_resume="claude-resume"
 alias claude_resume_logs="claude-resume logs"
 
 # ------------------------------------------------------------------------------
-# Local LLM stack (Qwen 3.8 27B via llama-server GGUF or LM Studio Splash)
+# Local LLM stack (Qwen 3.8 27B Splash 4-bit on LM Studio)
 # ------------------------------------------------------------------------------
 # ANTHROPIC_BASE_URL is deliberately NOT exported here: it would route plain `claude`
 # to the local model. It is scoped inside qwen-code only.
 
-alias llm_start="llm-serve start"          # defaults to gguf5
+alias llm_start="llm-serve start"          # splash4
 alias llm_stop="llm-serve stop"
 alias llm_status="llm-serve status"
 alias llm_logs="llm-serve logs"

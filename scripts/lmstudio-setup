@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+# lmstudio-setup — make the LM Studio app a full assistant on the local Qwen 3.8 27B.
+#
+# Idempotent; rerun after editing anything in dotfiles/lmstudio/. Installs:
+#   - plugins: danielsig/duckduckgo (web + image search), danielsig/visit-website
+#     (read pages). lmstudio/js-code-sandbox and lmstudio/rag-v1 ship with the app.
+#   - MCP servers in ~/.lmstudio/mcp.json: filesystem (only ~/LMStudioFiles) and
+#     memory (~/.local/share/lmstudio-mcp/memory.jsonl). Other servers are kept.
+#   - the "Local Assistant" preset (system prompt telling the model to use its tools)
+#   - the virtual model local/qwen3.8-27b-splash (sampling + context defaults)
+#   - auto-approve for read-only tools; writes and code execution still ask
+#
+# LM Studio rewrites settings.json from memory, so quit the app before running.
+set -euo pipefail
+
+_self="${BASH_SOURCE[0]}"
+while [[ -L "$_self" ]]; do
+  _link="$(readlink "$_self")"
+  [[ "$_link" == /* ]] && _self="$_link" || _self="$(dirname "$_self")/$_link"
+done
+SRC="$(cd "$(dirname "$_self")/../dotfiles/lmstudio" && pwd)"
+LMS_HOME="${HOME}/.lmstudio"
+LMS="$(command -v lms 2>/dev/null || echo "${LMS_HOME}/bin/lms")"
+
+[[ -x "$LMS" ]] || { echo "LM Studio CLI not found — install LM Studio first (README §5.1)" >&2; exit 1; }
+if pgrep -xq "LM Studio"; then
+  echo "LM Studio is running; quit it first (it overwrites settings.json on exit)" >&2
+  exit 1
+fi
+NPX="$(command -v npx 2>/dev/null)" || { echo "npx not found — brew install node" >&2; exit 1; }
+
+echo "plugins"
+for p in danielsig/duckduckgo danielsig/visit-website; do
+  if [[ -d "${LMS_HOME}/extensions/plugins/${p}" ]]; then
+    echo "  $p already installed"
+  else
+    "$LMS" get -y "$p" >/dev/null && echo "  installed $p"
+  fi
+done
+
+mkdir -p "${HOME}/LMStudioFiles" "${HOME}/.local/share/lmstudio-mcp"
+
+# LM Studio launched from the Dock has a minimal PATH, so pin npx and give its
+# `#!/usr/bin/env node` a PATH that finds node.
+echo "MCP servers"
+python3 - "$SRC/mcp.json" "${LMS_HOME}/mcp.json" "$NPX" "$HOME" "$(dirname "$NPX"):/usr/bin:/bin" <<'EOF'
+import json, os, sys
+src, dst, npx, home, path = sys.argv[1:]
+t = open(src).read().replace("__NPX__", npx).replace("__HOME__", home).replace("__PATH__", path)
+ours = json.loads(t)["mcpServers"]
+cur = json.load(open(dst)) if os.path.exists(dst) else {}
+cur.setdefault("mcpServers", {}).update(ours)
+open(dst, "w").write(json.dumps(cur, indent=2) + "\n")
+print("  " + ", ".join(ours) + " -> " + dst)
+EOF
+
+echo "preset"
+mkdir -p "${LMS_HOME}/config-presets"
+cp "$SRC/presets/local-assistant.preset.json" "${LMS_HOME}/config-presets/"
+echo "  Local Assistant -> ${LMS_HOME}/config-presets/"
+
+echo "virtual model"
+VM_DST="${LMS_HOME}/hub/models/local/qwen3.8-27b-splash"
+mkdir -p "$VM_DST"
+cp "$SRC/qwen3.8-27b-splash/manifest.json" "$SRC/qwen3.8-27b-splash/model.yaml" "$VM_DST/"
+echo "  local/qwen3.8-27b-splash -> $VM_DST"
+
+# Pattern format is "<plugin>:<tool>" or "<plugin>:*"; MCP servers are "mcp/<name>".
+echo "tool auto-approve (read-only only)"
+python3 - "${LMS_HOME}/settings.json" <<'EOF'
+import json, os, sys
+p = sys.argv[1]
+s = json.load(open(p)) if os.path.exists(p) else {}
+want = ["danielsig/duckduckgo:*", "danielsig/visit-website:*"]
+want += ["mcp/filesystem:" + t for t in [
+    "read_file", "read_text_file", "read_media_file", "read_multiple_files",
+    "list_directory", "list_directory_with_sizes", "directory_tree", "search_files",
+    "get_file_info", "list_allowed_directories"]]
+want += ["mcp/memory:" + t for t in ["read_graph", "search_nodes", "open_nodes"]]
+pats = s.setdefault("chat", {}).setdefault("skipToolConfirmationPatterns", [])
+added = [w for w in want if w not in pats]
+pats.extend(added)
+open(p, "w").write(json.dumps(s, indent=4) + "\n")
+print(f"  {len(added)} added, {len(pats)} total")
+EOF
+
+cat <<'EOF'
+
+done. In LM Studio: load local/qwen3.8-27b-splash (or pick the already-loaded
+qwen-local), choose the "Local Assistant" preset, and enable the plugins and MCP
+servers for the chat from the integrations button under the message box.
+EOF

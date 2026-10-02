@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "__NPX__",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem@2026.8.31", "__HOME__/LMStudioFiles"],
+      "env": { "PATH": "__PATH__" }
+    },
+    "memory": {
+      "command": "__NPX__",
+      "args": ["-y", "@modelcontextprotocol/server-memory@2026.8.31"],
+      "env": {
+        "PATH": "__PATH__",
+        "MEMORY_FILE_PATH": "__HOME__/.local/share/lmstudio-mcp/memory.jsonl"
+      }
+    }
+  }
+}

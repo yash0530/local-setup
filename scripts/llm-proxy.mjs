@@ -3,7 +3,7 @@
  * llm-proxy — Anthropic Messages API  ->  OpenAI chat/completions shim.
  *
  * Lets any Anthropic-native harness (Claude Code, the Claude SDK, anything that
- * honours ANTHROPIC_BASE_URL) drive a local llama-server / any OpenAI-compatible
+ * honours ANTHROPIC_BASE_URL) drive a local LM Studio server / any OpenAI-compatible
  * endpoint.
  *
  * Zero dependencies — Node 18+ built-ins only.
@@ -524,7 +524,7 @@ async function callUpstream(oaiReq) {
       body: JSON.stringify(oaiReq),
     });
   } catch (e) {
-    const err = new Error(`cannot reach llama-server at ${UPSTREAM} — is it running? (${e.message})`);
+    const err = new Error(`cannot reach the model server at ${UPSTREAM} — is it running? (${e.message})`);
     err.status = 502;
     throw err;
   }

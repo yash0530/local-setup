@@ -6,7 +6,7 @@
 #
 #   qwen-code                          interactive session on the local model
 #   qwen-code -p "fix the lint"        headless one-shot
-#   qwen-code --model gguf5 -p "..."   switch model first (gguf5|gguf6|gguf8|splash4)
+#   qwen-code --model splash4 -p "..." start a specific model first (splash4)
 #   qwen-code --think low -p "..."     reasoning effort: xhigh (default) | medium | low
 #
 # Every other argument is passed through to `claude` untouched.
@@ -60,8 +60,7 @@ unset ANTHROPIC_API_KEY
 # 1800000 is the byte watchdog's ceiling; the chunk one is a floor, max(env, 300000).
 #
 # CLAUDE_CODE_MAX_CONTEXT_TOKENS matches the server's -c. It is in ESTIMATED tokens
-# (chars/3.5, overshoots real). gguf8 OOMs silently (empty turns) near 156k real, so use
-# gguf5 or splash4 for deep sessions. Below 65536 blocks fresh sessions client-side.
+# (chars/3.5, overshoots real). Below 65536 blocks fresh sessions client-side.
 exec env \
   ANTHROPIC_BASE_URL="http://127.0.0.1:${PROXY_PORT}" \
   ANTHROPIC_AUTH_TOKEN="local" \

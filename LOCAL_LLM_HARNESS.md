@@ -1,6 +1,6 @@
 # Wiring local Qwen 3.8 into Claude Code
 
-How to use the locally-served Qwen 3.8 27B (LM Studio Splash or llama.cpp GGUF) as a
+How to use the locally-served Qwen 3.8 27B (LM Studio Splash, 4-bit) as a
 working agent inside Claude Code. Numbers below were measured on this box (M5 Pro,
 64 GB), not estimated.
 
@@ -12,10 +12,10 @@ working agent inside Claude Code. Numbers below were measured on this box (M5 Pr
 
 | # | Thing | Type | What it's for |
 |---|---|---|---|
-| 1 | `llm-serve` | CLI | Start/stop/switch the model + proxy. Everything else assumes this is running. |
+| 1 | `llm-serve` | CLI | Start/stop the model + proxy. Everything else assumes this is running. |
 | 2 | `llm-proxy.mjs` | background service | Translates Anthropic ⇄ OpenAI so Claude Code can run on local weights. Started by `llm-serve`. |
 | 3 | `qwen` | CLI | One-shot prompt. Run it yourself, or from a Claude Code Bash call. |
-| 4 | `qwen-cli` | CLI | Interactive terminal chat (`llama-cli`, or `lms chat` for Splash). |
+| 4 | `qwen-cli` | CLI | Interactive terminal chat (`lms chat`). |
 | 5 | `qwen-code` | CLI wrapper | Claude Code pinned to the local model. What `claude local ...` calls. |
 | 6 | `local-llm` plugin | Claude Code plugin | The `local-qwen` subagent + `local-llm` skill. **Never installed** — loaded per-session by #7. |
 | 7 | `claude-local-subagent` | CLI wrapper | Claude Code on your **Pro subscription**, with the local subagent for that session only (`claude subagent`). |
@@ -58,8 +58,8 @@ session or straight from your terminal.
 
 ```
                  ┌─────────────────────────────────────────┐
-                 │ llama-server or LM Studio :8089 (OpenAI) │
-                 │   one Qwen 3.8 model resident at a time  │
+                 │     LM Studio Splash :8089 (OpenAI)     │
+                 │           Qwen 3.8 27B, 4-bit           │
                  └─────────────────────────────────────────┘
                      ▲                          ▲
         OpenAI HTTP  │                          │ HTTP
@@ -90,8 +90,7 @@ qwen "explain this regex: ^\d{3}-\d{4}$"
 git diff | qwen "write a conventional-commit message"
 qwen-cli splash4           # interactive terminal chat
 
-claude local qwen38_27 --bits 4              # Claude Code, 100% local (Splash)
-claude local qwen38_27                       # same model, 5-bit GGUF on llama.cpp
+claude local qwen38_27                       # Claude Code, 100% local (Splash)
 claude local qwen38_27 --think medium        # less reasoning, lower latency
 claude local                                 # whatever is already resident
 
@@ -106,18 +105,10 @@ ever leaks).
 
 ## 3. Which model
 
-**Qwen 3.8 27B only.** `claude local qwen38_27 [--bits 4|5|6|8] [--think xhigh|medium|low]`
-(default `--bits 5`, `--think xhigh`):
-
-| `--bits` | Alias | Engine | Draft | Notes |
-|---|---|---|---|---|
-| 4 | `splash4` | LM Studio Splash, 4-bit + DFlash2 drafter | built in | fastest; deepest verified recall. Errors if LM Studio isn't installed. |
-| 5 | `gguf5` | llama.cpp UD-Q5_K_XL | MTP n=2 | default; safe to ~200k |
-| 6 | `gguf6` | llama.cpp UD-Q6_K_XL | MTP n=4 | |
-| 8 | `gguf8` | llama.cpp Q8_0 | MTP n=3 | silent OOM (empty turns) near ~156k real context |
-
-Only one model is resident; `llm-serve start <alias>` **replaces** whatever is loaded,
-and the proxy survives the switch because it is model-agnostic.
+**Qwen 3.8 27B Splash only** (`splash4`: 4-bit + DFlash2 drafter on LM Studio's Splash
+engine). `claude local qwen38_27 [--think xhigh|medium|low]` (default `--think xhigh`);
+errors if LM Studio isn't installed. The proxy is model-agnostic, so a future model
+slots in behind it unchanged.
 
 **Splash** (measured 2026-09-27, LM Studio 0.4.25, Splash runtime 0.0.5, real Claude
 Code sessions):
@@ -125,8 +116,7 @@ Code sessions):
 - Warm follow-ups **1–2 s**; 97–99% of every prompt cached after the first request
   (LM Studio log `Done · input N · cached M`), TTFT 0.4–0.9 s.
 - Decode 35–84 t/s; cold 16k-token prefill ~33 s (~480 tok/s).
-- Correct recall at **227,078 tokens** of context on the depth ladder (stopped before the 50 GB GPU-memory limit; gguf5's best
-  was 158,766).
+- Correct recall at **227,078 tokens** of context on the depth ladder (stopped before the 50 GB GPU-memory limit).
 - Loads 262,144 ctx in ~15 s. Wired memory grows with context: ~22 GB at 62k, ~38 GB at
   199k, 44.8 GB at 227k (the GPU wired limit is 50 GB), so ~230k is the practical ceiling.
 - `llm-serve` starts it with `lms server start --port 8089` + `lms load … --identifier
@@ -143,39 +133,21 @@ restarts only the proxy when a running stack is at another level.
 
 ---
 
-## 4. The llama.cpp serving config
+## 4. The serving config
 
 Claude Code's system prompt plus tool definitions alone measure **~23,000 tokens**, so
 `llm-serve` serves the model's full native **262,144** window:
 
 ```bash
-llama-server -m ~/Models/qwen3.8-27b-gguf/Qwen3.8-27B-UD-Q5_K_XL.gguf \
-  --spec-type draft-mtp --spec-draft-n-max 2 \
-  -c 262144 -ngl 99 -fa on -np 1 --mlock \
-  --cache-ram 24576 --slot-save-path ~/.local/state/local-llm/kv \
-  --jinja --reasoning-format deepseek --reasoning-budget -1 \
-  --temp 1.0 --top-p 0.95 --top-k 20 \
-  -a qwen-local --host 127.0.0.1 --port 8089 --no-webui
+lms server start --port 8089
+lms load local/qwen3.8-27b-splash --identifier qwen-local --context-length 262144 --gpu max -y
 ```
 
-- **`--spec-type draft-mtp --spec-draft-n-max N`** — MTP at the measured peak per
-  quant (2 for gguf5, 4 for gguf6, 3 for gguf8). `LLM_SPEC=0` disables it.
-- **`--mlock`** — without it macOS evicts model pages under pressure and prefill
-  collapses (196 → 4 tok/s measured). `LLM_MLOCK=0` opts out.
-- **`--cache-ram 24576`** — a saved prompt state costs ~103 KB/token on this hybrid
-  model; the 8 GiB default logs `exceeds cache size limit ... skipping` past ~79k tokens
-  and cold-reprefills. Host RAM, not GPU-wired. `LLM_CACHE_RAM_MIB` overrides.
-  (`--cache-reuse` is not used: it is a no-op on this hybrid architecture.)
-- **`--slot-save-path`** — only enables the `/slots` save/restore endpoints; nothing
-  calls them automatically.
-- **`--reasoning-budget -1`** — unlimited thinking; the proxy heartbeat (§6) keeps a
-  long reasoning phase from looking dead. `LLM_THINK_BUDGET` caps it.
-- **`-np 1`** — required by MTP. One request at a time: a Claude Code session and a
-  `qwen` call serialize.
-- **`-a qwen-local`** — a stable model name, so nothing changes when you swap GGUFs.
-- **`--reasoning-format deepseek`** — reasoning arrives in `reasoning_content`, not
-  inline `<think>` tags, so the proxy can handle it deliberately.
-- **`--jinja`** — required for tool calls.
+- **`--identifier qwen-local`** — a stable model name the proxy and `qwen` use.
+- LM Studio owns the drafter and memory locking; sampling and `reasoning_effort` arrive
+  per request from the proxy.
+- Thinking is unlimited; the proxy heartbeat (§6) keeps a long reasoning phase from
+  looking dead.
 
 **Allocatable ≠ usable.** Prefill throughput falls with depth, so a very deep cold
 prompt costs minutes before the first token. Keep sessions open (warm) rather than
@@ -192,7 +164,7 @@ resuming big ones cold. `LLM_CTX=131072 llm-serve restart` sets a hard cap.
 ```bash
 qwen-code                          # interactive, on the resident model
 qwen-code -p "fix the lint"        # headless
-qwen-code --model gguf6 -p "..."   # switch model first, then run
+qwen-code --model splash4 -p "..." # start the model first, then run
 ```
 
 | Variable | Why |
@@ -321,16 +293,7 @@ rather than offered.
 
 ---
 
-## 9. Concurrency: why not vLLM?
-
-`-np 1` means requests queue. On this hardware the trade is concurrency *or* MTP:
-llama.cpp needs a single slot for MTP, and vLLM is CUDA-first with no MTP for these
-GGUFs, so it is slower at concurrency 1. With one user at the keyboard, keep MTP and
-let requests queue. Revisit on an NVIDIA box.
-
----
-
-## 10. What to send local
+## 9. What to send local
 
 **Send local:** summarising files, logs and diffs · docstrings and commit messages ·
 explaining unfamiliar code · triaging search hits · first-draft boilerplate.
@@ -343,43 +306,42 @@ to detect.
 
 ---
 
-## 11. Troubleshooting
+## 10. Troubleshooting
 
 | Symptom | Cause / fix |
 |---|---|
-| `cannot reach llama-server` | `llm-serve start` |
-| `claude local qwen38_27 --bits 4` says Splash is not installed | Install LM Studio and the Splash runtime + model (README §5.0), or use `--bits 5\|6\|8`. |
+| `cannot reach the model server` | `llm-serve start` |
+| `claude local qwen38_27` says Splash is not installed | Install LM Studio and the Splash runtime + model (README §5.1). |
 | `model not downloaded: incoai/Qwen3.8-27B-Splash` | `lms get https://huggingface.co/incoai/Qwen3.8-27B-Splash` — the bare name hits LM Studio Hub. |
 | Plain `claude` starts using the local model | Something exported `ANTHROPIC_BASE_URL` globally. Check `env \| grep ANTHROPIC`. |
-| Everything serializes / second request hangs | `-np 1` — one slot. Look for a stray headless client: `ps -eo pid,etime,command \| grep "claude -p"`. |
-| Empty turns deep into a gguf8 session | Silent OOM near ~156k context. Use gguf5 or splash4 for deep sessions; grep the server log for `kIOGPUCommandBufferCallbackErrorOutOfMemory`. |
-| Switching models seems to hang | It's reading the weights from disk. `llm-serve logs` to watch. |
-| Tool calls never fire | `--jinja` missing — without it the chat template can't emit tool calls. |
-| `couldn't bind HTTP server socket` when switching | Lingering `TIME_WAIT` on `:8089`; llama-server binds with `SO_REUSEPORT`, not `SO_REUSEADDR`. `llm-serve` stops the proxy first and waits for the port; by hand, wait ~30 s. |
+| Second request hangs | Look for a stray headless client holding the model: `ps -eo pid,etime,command \| grep "claude -p"`. |
+| Empty turns deep into a session | Silent OOM near the GPU wired limit (~230k context). Start a fresh session; `llm-serve logs` for errors. |
+| Starting seems to hang | It's reading the weights from disk. `llm-serve logs` to watch. |
 | `Did 0 searches` from WebSearch | The harness ran its own WebSearch. `llm-serve logs proxy`: a `WebSearch {"query":...}` line means the proxy ran it; a line plus `ERROR:` means the backend failed — switch `SEARCH_BACKEND`. |
-| `status` says stopped but something serves :8089 | An interrupted `start` left a daemon without a pidfile. `llm-serve` adopts listeners on both ports and recovers the model from argv on every command. |
+| `status` says stopped but something serves :8089 | An interrupted `start` left a listener without a pidfile. `llm-serve` adopts listeners on both ports on every command. |
 | `Unable to connect to API (ConnectionRefused)` mid-session | The proxy died. Daemons run in their own session (`detach()`); check `ps -o pid,pgid -p $(cat ~/.local/state/local-llm/proxy.pid)` (pid should equal pgid). `llm-serve restart-proxy` brings it back without touching the model. |
-| Prefill at single-digit tok/s | Memory pressure evicting model pages; `--mlock` should be on (don't set `LLM_MLOCK=0`). |
 | First turn of every session re-prefills ~20k tokens | Expected. The harness appends a static catalog after your prompt, and the hybrid model can't restore a partial prefix. Turn 2 onwards is warm; keep sessions open. |
 | `Stream idle timeout - no chunks received` on a big resume | The chunk watchdog (§6). `qwen-code` already sets 1800000; beyond that, the prefill is simply too long — keep sessions warm instead of resuming cold. |
 | `--think low` seems ignored on Splash | The LM Studio virtual model is missing or stale. `llm-serve restart splash4` reinstalls it. (`qwen-cli splash4` via `lms chat` always uses the model default.) |
 
 ---
 
-## 12. What's installed where
+## 11. What's installed where
 
 | Path | What |
 |---|---|
-| `~/.local/bin/llm-serve` | start/stop/switch/status for the whole stack |
+| `~/.local/bin/llm-serve` | start/stop/status for the whole stack |
 | `~/.local/bin/llm-proxy.mjs` | Anthropic ⇄ OpenAI shim (port 8790) |
 | `~/.local/bin/qwen` | one-shot CLI |
 | `~/.local/bin/qwen-cli` | interactive terminal chat |
 | `~/.local/bin/qwen-code` | Claude Code pinned to the local model |
 | `~/.local/bin/claude-local-subagent` | Claude Code + the opt-in local subagent |
 | `~/.claude/local-plugins/local-llm/` | the opt-in plugin. **Not** read by a plain `claude` |
-| `~/.lmstudio/hub/models/local/qwen3.8-27b-splash/` | Splash virtual model, installed by `llm-serve start splash4` |
+| `~/.lmstudio/hub/models/local/qwen3.8-27b-splash/` | Splash virtual model (reasoning effort, sampling, context defaults), installed by `llm-serve start splash4` and `lmstudio-setup` |
+| `~/.local/bin/lmstudio-setup` | LM Studio app tools: plugins, `~/.lmstudio/mcp.json`, Local Assistant preset, auto-approve (README §5.2) |
+| `~/LMStudioFiles/` | the only folder the LM Studio filesystem MCP can touch |
+| `~/.local/share/lmstudio-mcp/memory.jsonl` | the LM Studio memory MCP's store |
 | `~/.local/state/local-llm/` | pidfiles, `current`, logs |
-| `~/.local/state/local-llm/kv/` | `--slot-save-path` target; stays empty unless something calls `/slots` |
 
 The `~/.local/bin` entries are symlinks into this repo. Reproducible on a new machine
 with `./setup.sh`.

@@ -4,7 +4,7 @@
 # Studio silently drops a request's `reasoning_effort` and the chat template always
 # falls back to its own default (xhigh). Declaring the template's `reasoning_effort`
 # variable as a custom field makes LM Studio map the OpenAI-style request field onto
-# it, so `claude local qwen38_27 --bits 4 --think low` actually reaches the model.
+# it, so `claude local qwen38_27 --think low` actually reaches the model.
 # The weights and the SHA-checked template are untouched; this only wraps them.
 #
 # Installed by llm-serve to ~/.lmstudio/hub/models/local/qwen3.8-27b-splash/model.yaml
@@ -46,3 +46,26 @@ customFields:
     effects:
       - type: setJinjaVariable
         variable: reasoning_effort
+# Defaults for every load and request, UI or API, unless a request overrides them.
+# Sampling is Qwen 3.8's thinking-mode recommendation; the bare download ships none, so
+# without this LM Studio falls back to its generic defaults (top-k 40, min-p 0.05).
+# The UI otherwise loads with a small context, too small for tool results and web pages.
+config:
+  load:
+    fields:
+      - key: llm.load.contextLength
+        value: 262144
+  operation:
+    fields:
+      - key: llm.prediction.temperature
+        value: 1.0
+      - key: llm.prediction.topKSampling
+        value: 20
+      - key: llm.prediction.topPSampling
+        value:
+          checked: true
+          value: 0.95
+      - key: llm.prediction.minPSampling
+        value:
+          checked: false
+          value: 0

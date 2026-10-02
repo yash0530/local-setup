@@ -1,57 +1,20 @@
 #!/usr/bin/env bash
-# qwen-cli [gguf5|gguf6|gguf8|splash4] [--think low|medium|xhigh]
+# qwen-cli [splash4]
 #
-# Interactive terminal chat on a local Qwen 3.8 27B. gguf* run llama-cli with MTP and the
-# stack's sampling; it prints prefill/decode tok/s after each reply. Default gguf5,
-# thinking xhigh (or $LLM_EFFORT). splash4 brings the model up in LM Studio and opens
-# `lms chat` instead (llama-cli cannot load Splash weights).
-#
-# One model fits in 64 GB, so the gguf path stops the llm-serve server first.
-# Restart it afterwards with `llm-serve start`. Ctrl-C to quit.
+# Interactive terminal chat on the local Qwen 3.8 27B: brings the model up in LM Studio
+# (via llm-serve) and opens `lms chat`. Reasoning effort follows the model default here.
+# Ctrl-C to quit.
 set -euo pipefail
 
-Q=gguf5; THINK="${LLM_EFFORT:-xhigh}"
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --think) THINK="${2:-}"; shift 2 ;;
-    gguf5|gguf6|gguf8|splash4) Q="$1"; shift ;;
-    -h|--help) echo "usage: qwen-cli [gguf5|gguf6|gguf8|splash4] [--think low|medium|xhigh]"; exit 0 ;;
+    splash4) shift ;;
+    -h|--help) echo "usage: qwen-cli [splash4]"; exit 0 ;;
     *) echo "qwen-cli: unknown arg '$1'" >&2; exit 1 ;;
   esac
 done
 
-if [[ "$Q" == "splash4" ]]; then
-  LMS="$(command -v lms 2>/dev/null || echo "${HOME}/.lmstudio/bin/lms")"
-  llm-serve start splash4
-  echo "qwen-cli: splash4 via lms chat — Ctrl-C to quit (reasoning effort follows the model default here)"
-  exec "$LMS" chat qwen-local
-fi
-
-case "$Q" in
-  gguf5) M=~/Models/qwen3.8-27b-gguf/Qwen3.8-27B-UD-Q5_K_XL.gguf; N=2; T=1.0 ;;
-  gguf6) M=~/Models/qwen3.8-27b-gguf/Qwen3.8-27B-UD-Q6_K_XL.gguf; N=2; T=1.0 ;;
-  gguf8) M=~/Models/qwen3.8-27b-gguf/Qwen3.8-27B-Q8_0.gguf;       N=2; T=1.0 ;;
-esac
-[[ -f "$M" ]] || { echo "qwen-cli: model not found: $M" >&2; exit 1; }
-
-if curl -sf --max-time 2 "http://127.0.0.1:${LLAMA_PORT:-8089}/health" >/dev/null 2>&1; then
-  echo "qwen-cli: stopping the llm-serve server (one model fits at a time)…"
-  llm-serve stop >/dev/null 2>&1 || true
-fi
-
-KW=()
-if [[ -n "$THINK" ]]; then
-  case "$THINK" in
-    low|medium|xhigh) KW=(--chat-template-kwargs "{\"reasoning_effort\":\"$THINK\"}") ;;
-    *) echo "qwen-cli: --think must be low, medium or xhigh" >&2; exit 1 ;;
-  esac
-fi
-
-echo "qwen-cli: ${Q} (MTP n=${N}, temp ${T}${THINK:+, think ${THINK}}) — timings print after each reply; Ctrl-C to quit"
-# No --prompt => interactive mode. --mlock keeps prefill fast under memory pressure.
-exec llama-cli -m "$M" \
-  --spec-type draft-mtp --spec-draft-n-max "$N" \
-  -c "${LLM_CTX:-65536}" -ngl 99 -fa on --mlock \
-  --jinja --reasoning-format deepseek --reasoning-budget -1 \
-  "${KW[@]}" \
-  --temp "$T" --top-p 0.95 --top-k 20
+LMS="$(command -v lms 2>/dev/null || echo "${HOME}/.lmstudio/bin/lms")"
+llm-serve start splash4
+echo "qwen-cli: splash4 via lms chat — Ctrl-C to quit"
+exec "$LMS" chat qwen-local

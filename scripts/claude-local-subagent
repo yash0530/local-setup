@@ -21,8 +21,9 @@ if [[ ! -f "$PLUGIN_DIR/.claude-plugin/plugin.json" ]]; then
   exit 1
 fi
 
-if ! curl -sf --max-time 3 "http://127.0.0.1:${LLAMA_PORT:-8089}/health" >/dev/null 2>&1; then
-  echo "note: llama-server isn't responding — run 'llm-serve start' before delegating." >&2
+# LM Studio has no /health, only the OpenAI routes.
+if ! curl -sf --max-time 3 "http://127.0.0.1:${LLAMA_PORT:-8089}/v1/models" >/dev/null 2>&1; then
+  echo "note: the local model server isn't responding — run 'llm-serve start' before delegating." >&2
 fi
 
 exec claude --plugin-dir "$PLUGIN_DIR" "$@"

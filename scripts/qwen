@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * qwen — one-shot prompt against the local model server (llama-server or LM Studio).
+ * qwen — one-shot prompt against the local model server (LM Studio Splash).
  *
  * The universal integration point: every harness has a shell tool, so this works
  * identically from Claude Code (Bash), Antigravity (run_command), and Kiro
@@ -121,13 +121,13 @@ try {
     body: JSON.stringify(body),
   });
 } catch (e) {
-  console.error(`qwen: cannot reach llama-server at ${UPSTREAM} (${e.message})`);
+  console.error(`qwen: cannot reach the model server at ${UPSTREAM} (${e.message})`);
   console.error("      start it with:  llm-serve start");
   process.exit(1);
 }
 
 if (!res.ok) {
-  console.error(`qwen: llama-server returned ${res.status}: ${(await res.text()).slice(0, 300)}`);
+  console.error(`qwen: model server returned ${res.status}: ${(await res.text()).slice(0, 300)}`);
   process.exit(1);
 }
 

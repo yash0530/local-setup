@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# setup.sh — Automated installer for the Claude Code, AGY, Kiro, and Llama setup.
+# setup.sh — Automated installer for the Claude Code, AGY, Kiro, and local-LLM setup.
 
 set -euo pipefail
 
@@ -72,15 +72,21 @@ chmod +x "$REPO_DIR/scripts/claude-resume"
 # Run the daemon installation
 python3 "$CLAUDE_DIR/claude_resume_daemon.py" install
 
-# 5. Install the local-LLM stack (llama-server manager, proxy, CLIs)
+# 5. Install the local-LLM stack (model-server manager, proxy, CLIs)
 echo "Installing local LLM tooling to $HOME/.local/bin..."
 mkdir -p "$HOME/.local/bin"
 # Symlink rather than copy, so PATH can never run a stale script.
-for tool in llm-serve llm-proxy.mjs qwen qwen-cli qwen-code openrouter-code claude-local-subagent; do
+for tool in llm-serve llm-proxy.mjs qwen qwen-cli qwen-code openrouter-code claude-local-subagent lmstudio-setup; do
   ln -sfn "$REPO_DIR/scripts/$tool" "$HOME/.local/bin/$tool"
   chmod +x "$REPO_DIR/scripts/$tool"
 done
-echo "  installed: llm-serve, qwen, qwen-cli, qwen-code, openrouter-code, claude-local-subagent (+ llm-proxy)"
+echo "  installed: llm-serve, qwen, qwen-cli, qwen-code, openrouter-code, claude-local-subagent, lmstudio-setup (+ llm-proxy)"
+
+# LM Studio app as an assistant: search/visit plugins, MCP servers, preset. Non-fatal:
+# it needs LM Studio installed and quit.
+if command -v lms >/dev/null 2>&1 || [ -x "$HOME/.lmstudio/bin/lms" ]; then
+  "$REPO_DIR/scripts/lmstudio-setup" || echo "  skipped LM Studio setup — quit LM Studio and run: lmstudio-setup"
+fi
 
 # 6. Append zshrc snippet to ~/.zshrc
 ZSHRC="$HOME/.zshrc"
