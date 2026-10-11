@@ -9,16 +9,20 @@ long/AFK runs pick themselves back up. Runs in the background via launchd; survi
   latest assistant turn carries Claude Code's own flags: `error:"rate_limit"` /
   `apiErrorStatus:429` / `isApiErrorMessage:true`. Conversation that merely *mentions* limits
   can never trigger it (that was the old bug).
-- **Skips while you're working:** if the session status is `busy`, it does nothing.
-- **Timezone-aware reset:** parses `resets 4:30pm (America/Los_Angeles)` using the banner's
-  stated zone, anchored to when the limit was hit — correct even if this Mac's clock is on a
-  different timezone (travel). If the reset time has already passed, it resumes immediately.
+- **Transcript-authoritative:** Detection checks the latest assistant turn in the transcript
+  for rate-limit errors or rejected quota status. Even if a session retains `status: "busy"`
+  due to subagents or background tasks, it will still be properly detected and resumed.
+- **Structured and timezone-aware reset:** Reads machine-precise epoch from `quotaLimits.resetsAt`
+  when available, or parses clock and relative reset banners (`resets 4:30pm (America/Los_Angeles)`,
+  `resets in 15 minutes`) anchored to when the limit was hit. Adds a 15s grace buffer to ensure
+  the quota window has fully opened before nudging.
 - **Waits, then nudges:** at/after the reset it sends `continue` to the session's terminal
-  (Terminal.app / iTerm2 / tmux), up to 3 tries 10 min apart, and posts a macOS notification.
+  (Terminal.app / iTerm2 / tmux), with smart backoff retry (1 min, then 5 min up to 3 tries),
+  and posts a macOS notification.
 - **Confirms via the transcript:** once a normal assistant reply appears, it logs `[RESOLVED]`.
 
 Config constants are at the top of `claude_resume_daemon.py`:
-`CHECK_INTERVAL_SECONDS=30`, `RETRY_INTERVAL_SECONDS=600`, `MAX_RETRIES=3`.
+`CHECK_INTERVAL_SECONDS=30`, `MAX_RETRIES=3`, `GRACE_SECONDS=15`.
 
 ## Use it
 It's already installed and running under launchd (label `com.user.clauderesume`). Nothing to do

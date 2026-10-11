@@ -1,50 +1,86 @@
 #!/bin/bash
+set -eo pipefail
 
-# Get the action
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DAEMON_REPO_SCRIPT="$SCRIPT_DIR/claude_resume_daemon.py"
+DAEMON_INSTALLED_SCRIPT="$HOME/.claude/claude_resume_daemon.py"
+PLIST_PATH="$HOME/Library/LaunchAgents/com.user.clauderesume.plist"
+LOG_PATH="$HOME/.claude/claude_resume_daemon.log"
+
+# Sync installed script from repo if repo is present
+if [ -f "$DAEMON_REPO_SCRIPT" ]; then
+    mkdir -p "$HOME/.claude"
+    if [ ! -f "$DAEMON_INSTALLED_SCRIPT" ] || [ "$DAEMON_REPO_SCRIPT" -nt "$DAEMON_INSTALLED_SCRIPT" ]; then
+        cp "$DAEMON_REPO_SCRIPT" "$DAEMON_INSTALLED_SCRIPT"
+        chmod +x "$DAEMON_INSTALLED_SCRIPT"
+    fi
+fi
+
+if [ -f "$DAEMON_INSTALLED_SCRIPT" ]; then
+    DAEMON_PY="$DAEMON_INSTALLED_SCRIPT"
+else
+    DAEMON_PY="$DAEMON_REPO_SCRIPT"
+fi
+
 ACTION="${1:-status}"
+shift || true
 
 case "$ACTION" in
     start)
         echo "Starting Claude Auto-Resume Daemon..."
-        launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.user.clauderesume.plist 2>/dev/null
-        launchctl kickstart gui/$(id -u)/com.user.clauderesume
+        if [ ! -f "$PLIST_PATH" ]; then
+            echo "LaunchAgent plist not found. Running install..."
+            python3 "$DAEMON_PY" install
+        else
+            launchctl bootstrap "gui/$(id -u)" "$PLIST_PATH" 2>/dev/null || true
+            launchctl kickstart -k "gui/$(id -u)/com.user.clauderesume" 2>/dev/null || true
+        fi
+        sleep 0.5
+        python3 "$DAEMON_PY" status
         ;;
     stop)
         echo "Stopping Claude Auto-Resume Daemon..."
-        launchctl bootout gui/$(id -u)/com.user.clauderesume 2>/dev/null
+        launchctl bootout "gui/$(id -u)/com.user.clauderesume" 2>/dev/null || true
+        python3 "$DAEMON_PY" stop
+        rm -f "$HOME/.claude/claude_resume_daemon.pid"
         ;;
     restart)
         echo "Restarting Claude Auto-Resume Daemon..."
-        launchctl kickstart -k gui/$(id -u)/com.user.clauderesume
+        if [ ! -f "$PLIST_PATH" ]; then
+            python3 "$DAEMON_PY" install
+        else
+            if ! launchctl list | grep -q com.user.clauderesume; then
+                launchctl bootstrap "gui/$(id -u)" "$PLIST_PATH" 2>/dev/null || true
+            fi
+            launchctl kickstart -k "gui/$(id -u)/com.user.clauderesume" 2>/dev/null || true
+        fi
+        sleep 1
+        python3 "$DAEMON_PY" status
         ;;
     status)
-        echo "--- Daemon Status ---"
-        PID=$(pgrep -f claude_resume_daemon.py | head -n 1)
-        if [ -n "$PID" ]; then
-            echo "Python daemon process: RUNNING (PID: $PID)"
-        else
-            echo "Python daemon process: NOT RUNNING"
-        fi
-        
-        echo -n "Launchd agent state: "
-        if launchctl list | grep -q com.user.clauderesume; then
-            echo "LOADED"
-            launchctl list | grep com.user.clauderesume
-        else
-            echo "NOT LOADED"
-        fi
+        python3 "$DAEMON_PY" status
         ;;
     logs)
-        echo "--- Daemon Logs (~/.claude/claude_resume_daemon.log) ---"
-        tail -n 20 ~/.claude/claude_resume_daemon.log
+        echo "--- Daemon Logs ($LOG_PATH) ---"
+        if [ "${1:-}" = "-f" ] || [ "${1:-}" = "follow" ]; then
+            tail -f "$LOG_PATH"
+        else
+            tail -n "${1:-30}" "$LOG_PATH"
+        fi
         ;;
     install)
         echo "Installing Launchd plist and loading agent..."
-        python3 ~/.claude/claude_resume_daemon.py install
+        mkdir -p "$HOME/.claude"
+        if [ -f "$DAEMON_REPO_SCRIPT" ]; then
+            cp "$DAEMON_REPO_SCRIPT" "$DAEMON_INSTALLED_SCRIPT"
+            chmod +x "$DAEMON_INSTALLED_SCRIPT"
+            cp "$SCRIPT_DIR/claude_resume_daemon.README.md" "$HOME/.claude/claude_resume_daemon.README.md" 2>/dev/null || true
+        fi
+        python3 "$DAEMON_INSTALLED_SCRIPT" install
         ;;
     uninstall)
         echo "Uninstalling Launchd plist and unloading agent..."
-        python3 ~/.claude/claude_resume_daemon.py uninstall
+        python3 "$DAEMON_PY" uninstall
         ;;
     *)
         echo "Usage: claude-resume [start|stop|restart|status|logs|install|uninstall]"

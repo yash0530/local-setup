@@ -62,6 +62,7 @@ fi
 echo "Installing Claude Auto-Resume Daemon..."
 cp "$REPO_DIR/scripts/claude_resume_daemon.py" "$CLAUDE_DIR/claude_resume_daemon.py"
 cp "$REPO_DIR/scripts/claude_resume_daemon.README.md" "$CLAUDE_DIR/claude_resume_daemon.README.md"
+chmod +x "$CLAUDE_DIR/claude_resume_daemon.py"
 
 # Install global cli wrapper
 echo "Installing claude-resume command..."
