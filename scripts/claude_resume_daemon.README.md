@@ -16,9 +16,12 @@ long/AFK runs pick themselves back up. Runs in the background via launchd; survi
   when available, or parses clock and relative reset banners (`resets 4:30pm (America/Los_Angeles)`,
   `resets in 15 minutes`) anchored to when the limit was hit. Adds a 15s grace buffer to ensure
   the quota window has fully opened before nudging.
+- **Process ancestor resolution:** Traverses the process hierarchy to map internal ptys (e.g. from shell wrappers or `kiro-cli-term`) back to the parent terminal emulator window/tab, ensuring AppleScript commands target valid tabs without freezing or erroring.
 - **Waits, then nudges:** at/after the reset it sends `continue` to the session's terminal
   (Terminal.app / iTerm2 / tmux), with smart backoff retry (1 min, then 5 min up to 3 tries),
   and posts a macOS notification.
+- **Fail-safe retry ceiling:** Retries are strictly capped at `MAX_RETRIES` (3 attempts), guaranteeing
+  the daemon never enters a runaway loop or floods AppleScript on detached terminals.
 - **Confirms via the transcript:** once a normal assistant reply appears, it logs `[RESOLVED]`.
 
 Config constants are at the top of `claude_resume_daemon.py`:

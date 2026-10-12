@@ -27,7 +27,7 @@ PLIST_PATH = os.path.expanduser("~/Library/LaunchAgents/com.user.clauderesume.pl
 MAX_LOG_SIZE = 5 * 1024 * 1024  # 5 MB
 
 # Tracking state, keyed by sessionId:
-#   { "reset_at": datetime, "attempts": int, "tty": str|None, "logged_max": bool }
+#   { "reset_at": datetime, "attempts": int, "pid": int, "tty": str|None, "term_type": str|None, "logged_max": bool }
 tracking_state = {}
 
 def handle_signal(sig, frame):
@@ -180,7 +180,7 @@ def check_iterm(tty_path):
     return "no"
     '''
     try:
-        res = subprocess.check_output(["osascript", "-e", script], text=True, stderr=subprocess.DEVNULL, timeout=5).strip()
+        res = subprocess.check_output(["osascript", "-e", script], text=True, stderr=subprocess.DEVNULL, timeout=4).strip()
         return res == "yes"
     except Exception:
         return False
@@ -203,49 +203,84 @@ def check_terminal_app(tty_path):
     return "no"
     '''
     try:
-        res = subprocess.check_output(["osascript", "-e", script], text=True, stderr=subprocess.DEVNULL, timeout=5).strip()
+        res = subprocess.check_output(["osascript", "-e", script], text=True, stderr=subprocess.DEVNULL, timeout=4).strip()
         return res == "yes"
     except Exception:
         return False
 
-def get_tty_for_pid(pid):
-    """Gets the outer TTY name for a process PID by traversing up the process tree.
+def find_terminal_for_pid(pid):
+    """Finds the terminal type and outer TTY for a process PID.
     
-    If the process is running in a wrapper (like kiro-cli-term/node-pty) that allocates
-    a pseudo-terminal, the actual terminal emulator tab/pane runs on the outer TTY.
-    We traverse up the process tree to find the TTY of the first ancestor that is
-    associated with an active Terminal.app, iTerm2, or tmux session.
+    Walks up the process ancestor tree using POSIX `ps` to find the process that is
+    the direct child of Terminal.app, iTerm2, or tmux. This cleanly handles shell wrappers
+    (such as kiro-cli-term or node-pty) that create internal ptys, mapping them to the
+    actual window/tab TTY recognized by the terminal emulator.
+    
+    Returns (terminal_type: str|None, tty_path: str|None).
     """
-    curr_pid = pid
+    if not pid:
+        return None, None
+
+    curr = pid
     visited = set()
-    fallback_tty = None
-    
-    while curr_pid and curr_pid not in visited:
-        visited.add(curr_pid)
+    process_tty = None
+
+    while curr and curr not in visited and curr > 1:
+        visited.add(curr)
         try:
-            output = subprocess.check_output(["ps", "-p", str(curr_pid), "-o", "tty="], text=True, stderr=subprocess.DEVNULL).strip()
-            if output and "?" not in output:
-                tty = normalize_tty(output)
-                if fallback_tty is None:
-                    fallback_tty = tty
-                
-                # Check if this TTY is active in any terminal emulator
-                if check_tmux(tty) or check_iterm(tty) or check_terminal_app(tty):
-                    return tty
-        except Exception:
-            pass
-            
-        # Get PPID
-        try:
-            output = subprocess.check_output(["ps", "-o", "ppid=", "-p", str(curr_pid)], text=True, stderr=subprocess.DEVNULL).strip()
-            if output:
-                curr_pid = int(output)
-            else:
+            tty_out = subprocess.check_output(
+                ["ps", "-p", str(curr), "-o", "tty="],
+                text=True, stderr=subprocess.DEVNULL
+            ).strip()
+            if tty_out and "?" not in tty_out and process_tty is None:
+                process_tty = normalize_tty(tty_out)
+
+            ppid_str = subprocess.check_output(
+                ["ps", "-o", "ppid=", "-p", str(curr)],
+                text=True, stderr=subprocess.DEVNULL
+            ).strip()
+            if not ppid_str:
                 break
+            ppid = int(ppid_str)
+
+            pcmd = subprocess.check_output(
+                ["ps", "-o", "command=", "-p", str(ppid)],
+                text=True, stderr=subprocess.DEVNULL
+            ).strip()
+
+            if "Terminal.app" in pcmd:
+                direct_tty = subprocess.check_output(
+                    ["ps", "-o", "tty=", "-p", str(curr)],
+                    text=True, stderr=subprocess.DEVNULL
+                ).strip()
+                return "terminal", normalize_tty(direct_tty)
+            if "iTerm" in pcmd or "iTerm.app" in pcmd:
+                direct_tty = subprocess.check_output(
+                    ["ps", "-o", "tty=", "-p", str(curr)],
+                    text=True, stderr=subprocess.DEVNULL
+                ).strip()
+                return "iterm", normalize_tty(direct_tty)
+            if "tmux" in pcmd:
+                direct_tty = subprocess.check_output(
+                    ["ps", "-o", "tty=", "-p", str(curr)],
+                    text=True, stderr=subprocess.DEVNULL
+                ).strip()
+                return "tmux", normalize_tty(direct_tty)
+
+            curr = ppid
         except Exception:
             break
-            
-    return fallback_tty
+
+    # Fallback: check if the process's own TTY is recognized by tmux/iterm/terminal
+    if process_tty:
+        if check_tmux(process_tty):
+            return "tmux", process_tty
+        if check_iterm(process_tty):
+            return "iterm", process_tty
+        if check_terminal_app(process_tty):
+            return "terminal", process_tty
+
+    return None, process_tty
 
 def send_terminal_app_enter(tty_path):
     """Sends 'continue' command to Terminal.app tab matching tty_path."""
@@ -256,8 +291,12 @@ def send_terminal_app_enter(tty_path):
             repeat with w in windows
                 repeat with t in tabs of w
                     if tty of t is "{tty_path}" then
-                        do script "continue" in t
-                        return "sent"
+                        try
+                            do script "continue" in t
+                            return "sent"
+                        on error errMsg
+                            return "error: " & errMsg
+                        end try
                     end if
                 end repeat
             end repeat
@@ -282,8 +321,12 @@ def send_iterm_enter(tty_path):
                     repeat with s in sessions of t
                         set s_tty to tty of s
                         if s_tty is "{tty_path}" or s_tty is "{tty_name}" then
-                            tell s to write text "continue"
-                            return "sent"
+                            try
+                                tell s to write text "continue"
+                                return "sent"
+                            on error errMsg
+                                return "error: " & errMsg
+                            end try
                         end if
                     end repeat
                 end repeat
@@ -317,18 +360,6 @@ def send_tmux_enter(tty_path):
     except Exception:
         pass
     return "not_found"
-
-def get_terminal_content(tty_path):
-    """Identifies which terminal emulator owns matching tty_path."""
-    if not tty_path:
-        return "", None
-    if check_tmux(tty_path):
-        return "", "tmux"
-    if check_iterm(tty_path):
-        return "", "iterm"
-    if check_terminal_app(tty_path):
-        return "", "terminal"
-    return "", None
 
 def send_enter(tty_path, terminal_type):
     """Sends enter key to the specified terminal type."""
@@ -533,6 +564,7 @@ def run_loop():
 
             for s in sessions:
                 sid = s.get("sessionId")
+                pid = s.get("pid")
                 if not sid:
                     continue
                 active_ids.add(sid)
@@ -544,42 +576,61 @@ def run_loop():
                 blocked, banner_reset = check_session_rate_limited(s)
 
                 if blocked:
-                    tty = get_tty_for_pid(s.get("pid"))
+                    term_type, tty = find_terminal_for_pid(pid)
                     if sid not in tracking_state:
                         base_reset = banner_reset or (datetime.now(timezone.utc) + timedelta(hours=5))
                         reset_at = base_reset + timedelta(seconds=GRACE_SECONDS)
                         local = reset_at.astimezone()
-                        log(f"[DETECTED] Session {sid[:8]} (PID {s.get('pid')}) is rate-limit blocked; will resume after {local:%Y-%m-%d %H:%M:%S %Z}.")
+                        term_desc = f"{tty} ({term_type})" if tty and term_type else (tty or "unknown")
+                        log(f"[DETECTED] Session {sid[:8]} (PID {pid}) on {term_desc} is rate-limit blocked; will resume after {local:%Y-%m-%d %H:%M:%S %Z}.")
                         notify("Claude rate-limited", f"Auto-resume scheduled for {local:%-I:%M %p}")
                         tracking_state[sid] = {
                             "reset_at": reset_at,
                             "attempts": 0,
+                            "pid": pid,
                             "tty": tty,
+                            "term_type": term_type,
                             "logged_max": False
                         }
                     state = tracking_state[sid]
-                    if tty:
+                    if pid:
+                        state["pid"] = pid
+                    if tty and term_type:
                         state["tty"] = tty
+                        state["term_type"] = term_type
+
                     now_dt = datetime.now(timezone.utc)
                     if now_dt < state["reset_at"]:
                         continue  # reset not reached yet — wait, do NOT nudge
-                    if not state.get("tty"):
-                        continue  # blocked but no terminal to send to
+
+                    # Reset window has arrived! Resolve live terminal for PID
+                    cur_term_type = state.get("term_type")
+                    cur_tty = state.get("tty")
+                    if not cur_term_type or not cur_tty:
+                        cur_term_type, cur_tty = find_terminal_for_pid(state.get("pid"))
+                        if cur_tty:
+                            state["tty"] = cur_tty
+                        if cur_term_type:
+                            state["term_type"] = cur_term_type
+
                     if state["attempts"] < MAX_RETRIES:
-                        _, term_type = get_terminal_content(state["tty"])
                         attempt_num = state["attempts"] + 1
-                        log(f"[ACTION] Reset window elapsed — resuming {sid[:8]} on {state['tty']} ({term_type}). Attempt {attempt_num}/{MAX_RETRIES}...")
-                        result = send_enter(state["tty"], term_type)
-                        if result == "sent":
-                            if state["attempts"] == 0:
-                                notify("Claude resumed", f"Sent 'continue' to session {sid[:8]}")
-                            state["attempts"] += 1
-                            # Attempt 1 retry is 60s (in case of slight server clock skew); subsequent retries 300s
-                            delay = 60 if state["attempts"] == 1 else 300
-                            state["reset_at"] = now_dt + timedelta(seconds=delay)
+                        state["attempts"] += 1  # Always increment attempt count
+
+                        if cur_term_type and cur_tty:
+                            log(f"[ACTION] Reset window elapsed — resuming {sid[:8]} on {cur_tty} ({cur_term_type}). Attempt {attempt_num}/{MAX_RETRIES}...")
+                            result = send_enter(cur_tty, cur_term_type)
+                            if result == "sent":
+                                if attempt_num == 1:
+                                    notify("Claude resumed", f"Sent 'continue' to session {sid[:8]}")
+                                delay = 60 if attempt_num == 1 else 300
+                                state["reset_at"] = now_dt + timedelta(seconds=delay)
+                            else:
+                                log(f"[ERROR] Failed to send resume to {cur_tty} ({cur_term_type}). Result: {result}")
+                                state["reset_at"] = now_dt + timedelta(seconds=60)
                         else:
-                            log(f"[ERROR] Failed to send resume to {state['tty']} ({term_type}). Result: {result}")
-                            state["reset_at"] = now_dt + timedelta(seconds=30)
+                            log(f"[ERROR] Terminal not found for session {sid[:8]} (PID {state.get('pid')}, TTY {cur_tty}). Cannot resume automatically.")
+                            state["reset_at"] = now_dt + timedelta(seconds=60)
                     elif not state.get("logged_max"):
                         log(f"[MAX RETRIES] Resumed {MAX_RETRIES}x on {sid[:8]} but it still looks blocked. Waiting for manual intervention.")
                         state["logged_max"] = True
@@ -786,8 +837,7 @@ def get_daemon_status():
             sid = s.get("sessionId", "unknown")
             pid = s.get("pid", "?")
             cwd = s.get("cwd", "?")
-            tty = get_tty_for_pid(pid)
-            _, term_type = get_terminal_content(tty) if tty else ("", None)
+            term_type, tty = find_terminal_for_pid(pid)
             blocked, reset_at = check_session_rate_limited(s)
 
             term_info = f"{tty or 'unknown'} ({term_type or 'unknown'})"
