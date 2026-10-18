@@ -242,3 +242,20 @@ In a chat: pick `local/qwen3.8-27b-splash` (or the already-loaded `qwen-local`),
 the Local Assistant preset, and turn the plugins and MCP servers on from the
 integrations button under the message box. Config lives in `dotfiles/lmstudio/`; edit
 it and rerun `lmstudio-setup`.
+
+---
+
+## 6. Emulators (PCSX2 / NFS Most Wanted)
+
+A tuned PCSX2 setup for **Need for Speed: Most Wanted (Black Edition)** on Apple Silicon
+— a full game-ready config, a working DualSense control layout, and the reasoning behind
+the performance choices. See [emulators/README.md](emulators/README.md); the live config is
+[emulators/PCSX2.ini](emulators/PCSX2.ini).
+
+Restore on a machine:
+```bash
+mkdir -p "$HOME/Library/Application Support/PCSX2/inis"
+cp emulators/PCSX2.ini "$HOME/Library/Application Support/PCSX2/inis/PCSX2.ini"
+```
+The `.ini` paths are relative, so it's safe to share. Details on the Rosetta/CPU
+bottleneck, the QHD rendering config, and the PCSX2 SDL-binding gotchas are in that file.
