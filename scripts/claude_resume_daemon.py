@@ -298,6 +298,7 @@ def send_terminal_app_enter(tty_path):
     script = f'''
     if application "Terminal" is not running then
         return "app_not_running"
+    end if
     tell application "Terminal"
         repeat with w in windows
             repeat with t in tabs of w
@@ -314,8 +315,17 @@ def send_terminal_app_enter(tty_path):
     end tell
     return "tab_not_found"
     '''
+    return _run_osascript(script)
+
+def _run_osascript(script):
+    """Runs an osascript one-liner; returns its output, or a short reason string on failure."""
     try:
-        return subprocess.check_output(["osascript", "-e", script], text=True, stderr=subprocess.PIPE, timeout=OSASCRIPT_TIMEOUT).strip()
+        return subprocess.check_output(["osascript", "-e", script], text=True,
+                                       stderr=subprocess.PIPE, timeout=OSASCRIPT_TIMEOUT).strip()
+    except subprocess.CalledProcessError as e:
+        lines = (e.stderr or "").strip().splitlines()
+        detail = lines[0].strip() if lines else str(e)
+        return f"apple_event_error: {detail[:160]}"
     except subprocess.TimeoutExpired:
         return "timeout"
     except Exception as e:
@@ -328,6 +338,7 @@ def send_iterm_enter(tty_path):
     script = f'''
     if application "iTerm" is not running then
         return "app_not_running"
+    end if
     tell application "iTerm"
         repeat with w in windows
             repeat with t in tabs of w
@@ -347,12 +358,7 @@ def send_iterm_enter(tty_path):
     end tell
     return "session_not_found"
     '''
-    try:
-        return subprocess.check_output(["osascript", "-e", script], text=True, stderr=subprocess.PIPE, timeout=OSASCRIPT_TIMEOUT).strip()
-    except subprocess.TimeoutExpired:
-        return "timeout"
-    except Exception as e:
-        return f"error: {type(e).__name__}: {e}"
+    return _run_osascript(script)
 
 def send_tmux_enter(tty_path):
     """Sends 'continue' command to tmux pane matching tty_path."""
