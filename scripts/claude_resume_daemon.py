@@ -16,8 +16,15 @@ except Exception:
 
 # Configuration
 CHECK_INTERVAL_SECONDS = 30
-MAX_RETRIES = 3
 GRACE_SECONDS = 15  # Buffer after stated reset instant before nudging
+# Escalating delays applied BEFORE each re-nudge when the last send FAILED.
+# Retries persist (backed off, not infinite 30s polling) until the session is
+# confirmed unblocked via the transcript, or its terminal/session goes away.
+RETRY_DELAYS_SECONDS = [60, 180, 300, 900, 1800]
+# Hard ceiling on nudges per detection: ~7.75h of escalating attempts, after
+# which we stop and wait for the transcript to change (recovery or user cleanup).
+RETRY_MAX_ATTEMPTS = 20
+OSASCRIPT_TIMEOUT = 10  # Apple Events can block on a wedged GUI app; don't stall the loop
 
 CLAUDE_DIR = os.path.expanduser("~/.claude")
 CLAUDE_SESSIONS_DIR = os.path.join(CLAUDE_DIR, "sessions")
@@ -27,7 +34,10 @@ PLIST_PATH = os.path.expanduser("~/Library/LaunchAgents/com.user.clauderesume.pl
 MAX_LOG_SIZE = 5 * 1024 * 1024  # 5 MB
 
 # Tracking state, keyed by sessionId:
-#   { "reset_at": datetime, "attempts": int, "pid": int, "tty": str|None, "term_type": str|None, "logged_max": bool }
+#   { "reset_at": datetime, "attempts": int, "pid": int, "tty": str|None, "term_type": str|None }
+# "attempts" counts nudges since detection; each failure backs off along
+# RETRY_DELAYS_SECONDS (escalating) and retries persist until the transcript
+# confirms recovery or the session/terminal disappears.
 tracking_state = {}
 
 def handle_signal(sig, frame):
@@ -286,13 +296,46 @@ def send_terminal_app_enter(tty_path):
     """Sends 'continue' command to Terminal.app tab matching tty_path."""
     tty_path = normalize_tty(tty_path)
     script = f'''
-    if application "Terminal" is running then
-        tell application "Terminal"
-            repeat with w in windows
-                repeat with t in tabs of w
-                    if tty of t is "{tty_path}" then
+    if application "Terminal" is not running then
+        return "app_not_running"
+    tell application "Terminal"
+        repeat with w in windows
+            repeat with t in tabs of w
+                if tty of t is "{tty_path}" then
+                    try
+                        do script "continue" in t
+                        return "sent"
+                    on error errMsg
+                        return "error: " & errMsg
+                    end try
+                end if
+            end repeat
+        end repeat
+    end tell
+    return "tab_not_found"
+    '''
+    try:
+        return subprocess.check_output(["osascript", "-e", script], text=True, stderr=subprocess.PIPE, timeout=OSASCRIPT_TIMEOUT).strip()
+    except subprocess.TimeoutExpired:
+        return "timeout"
+    except Exception as e:
+        return f"error: {type(e).__name__}: {e}"
+
+def send_iterm_enter(tty_path):
+    """Sends 'continue' command to iTerm2 session matching tty_path."""
+    tty_path = normalize_tty(tty_path)
+    tty_name = os.path.basename(tty_path)
+    script = f'''
+    if application "iTerm" is not running then
+        return "app_not_running"
+    tell application "iTerm"
+        repeat with w in windows
+            repeat with t in tabs of w
+                repeat with s in sessions of t
+                    set s_tty to tty of s
+                    if s_tty is "{tty_path}" or s_tty is "{tty_name}" then
                         try
-                            do script "continue" in t
+                            tell s to write text "continue"
                             return "sent"
                         on error errMsg
                             return "error: " & errMsg
@@ -300,45 +343,16 @@ def send_terminal_app_enter(tty_path):
                     end if
                 end repeat
             end repeat
-        end tell
-    end if
-    return "not_found"
+        end repeat
+    end tell
+    return "session_not_found"
     '''
     try:
-        return subprocess.check_output(["osascript", "-e", script], text=True, stderr=subprocess.DEVNULL, timeout=5).strip()
-    except Exception:
-        return "error"
-
-def send_iterm_enter(tty_path):
-    """Sends 'continue' command to iTerm2 session matching tty_path."""
-    tty_path = normalize_tty(tty_path)
-    tty_name = os.path.basename(tty_path)
-    script = f'''
-    if application "iTerm" is running then
-        tell application "iTerm"
-            repeat with w in windows
-                repeat with t in tabs of w
-                    repeat with s in sessions of t
-                        set s_tty to tty of s
-                        if s_tty is "{tty_path}" or s_tty is "{tty_name}" then
-                            try
-                                tell s to write text "continue"
-                                return "sent"
-                            on error errMsg
-                                return "error: " & errMsg
-                            end try
-                        end if
-                    end repeat
-                end repeat
-            end repeat
-        end tell
-    end if
-    return "not_found"
-    '''
-    try:
-        return subprocess.check_output(["osascript", "-e", script], text=True, stderr=subprocess.DEVNULL, timeout=5).strip()
-    except Exception:
-        return "error"
+        return subprocess.check_output(["osascript", "-e", script], text=True, stderr=subprocess.PIPE, timeout=OSASCRIPT_TIMEOUT).strip()
+    except subprocess.TimeoutExpired:
+        return "timeout"
+    except Exception as e:
+        return f"error: {type(e).__name__}: {e}"
 
 def send_tmux_enter(tty_path):
     """Sends 'continue' command to tmux pane matching tty_path."""
@@ -589,8 +603,7 @@ def run_loop():
                             "attempts": 0,
                             "pid": pid,
                             "tty": tty,
-                            "term_type": term_type,
-                            "logged_max": False
+                            "term_type": term_type
                         }
                     state = tracking_state[sid]
                     if pid:
@@ -613,27 +626,42 @@ def run_loop():
                         if cur_term_type:
                             state["term_type"] = cur_term_type
 
-                    if state["attempts"] < MAX_RETRIES:
-                        attempt_num = state["attempts"] + 1
-                        state["attempts"] += 1  # Always increment attempt count
-
-                        if cur_term_type and cur_tty:
-                            log(f"[ACTION] Reset window elapsed — resuming {sid[:8]} on {cur_tty} ({cur_term_type}). Attempt {attempt_num}/{MAX_RETRIES}...")
-                            result = send_enter(cur_tty, cur_term_type)
-                            if result == "sent":
-                                if attempt_num == 1:
-                                    notify("Claude resumed", f"Sent 'continue' to session {sid[:8]}")
-                                delay = 60 if attempt_num == 1 else 300
-                                state["reset_at"] = now_dt + timedelta(seconds=delay)
-                            else:
-                                log(f"[ERROR] Failed to send resume to {cur_tty} ({cur_term_type}). Result: {result}")
-                                state["reset_at"] = now_dt + timedelta(seconds=60)
-                        else:
-                            log(f"[ERROR] Terminal not found for session {sid[:8]} (PID {state.get('pid')}, TTY {cur_tty}). Cannot resume automatically.")
+                    attempt_num = state["attempts"] + 1
+                    if cur_term_type and cur_tty:
+                        log(f"[ACTION] Reset window elapsed — resuming {sid[:8]} on {cur_tty} ({cur_term_type}). Attempt {attempt_num}...")
+                        result = send_enter(cur_tty, cur_term_type)
+                        if result == "sent":
+                            if attempt_num == 1:
+                                notify("Claude resumed", f"Sent 'continue' to session {sid[:8]}")
+                            # Sent — wait for the transcript to confirm recovery;
+                            # if it still reads blocked, keep nudging (escalated).
+                            state["attempts"] += 1
                             state["reset_at"] = now_dt + timedelta(seconds=60)
-                    elif not state.get("logged_max"):
-                        log(f"[MAX RETRIES] Resumed {MAX_RETRIES}x on {sid[:8]} but it still looks blocked. Waiting for manual intervention.")
-                        state["logged_max"] = True
+                        elif state["attempts"] < RETRY_MAX_ATTEMPTS:
+                            # Failed — back off along RETRY_DELAYS_SECONDS and keep
+                            # retrying (bounded) until the session unblocks or its
+                            # terminal goes away. Previously 3 failures meant giving
+                            # up for hours, which killed unattended night runs.
+                            state["attempts"] += 1
+                            delay = RETRY_DELAYS_SECONDS[min(state["attempts"] - 1, len(RETRY_DELAYS_SECONDS) - 1)]
+                            log(f"[ERROR] Failed to send resume to {cur_tty} ({cur_term_type}). Result: {result}. Retrying in {delay}s (attempt {attempt_num}).")
+                            if attempt_num == 1:
+                                notify("Claude auto-resume struggling", f"Could not reach session {sid[:8]} ({result}); will keep trying")
+                            state["reset_at"] = now_dt + timedelta(seconds=delay)
+                        else:
+                            log(f"[GIVE UP] {RETRY_MAX_ATTEMPTS} attempts on {sid[:8]} without success. Pausing; will resume if the limit state changes.")
+                            state["reset_at"] = now_dt + timedelta(hours=1)
+                    else:
+                        if state["attempts"] < RETRY_MAX_ATTEMPTS:
+                            state["attempts"] += 1
+                            delay = RETRY_DELAYS_SECONDS[min(state["attempts"] - 1, len(RETRY_DELAYS_SECONDS) - 1)]
+                            log(f"[ERROR] Terminal not found for session {sid[:8]} (PID {state.get('pid')}, TTY {cur_tty}). Retrying in {delay}s (attempt {attempt_num}).")
+                            if attempt_num == 1:
+                                notify("Claude auto-resume struggling", f"No reachable terminal for session {sid[:8]}; will keep trying")
+                            state["reset_at"] = now_dt + timedelta(seconds=delay)
+                        else:
+                            log(f"[GIVE UP] {RETRY_MAX_ATTEMPTS} attempts on {sid[:8]}, no reachable terminal. Pausing; will resume if the limit state changes.")
+                            state["reset_at"] = now_dt + timedelta(hours=1)
                 else:
                     if sid in tracking_state:
                         log(f"[RESOLVED] Session {sid[:8]} is no longer rate-limited. Clearing tracking.")

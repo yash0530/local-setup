@@ -18,14 +18,21 @@ long/AFK runs pick themselves back up. Runs in the background via launchd; survi
   the quota window has fully opened before nudging.
 - **Process ancestor resolution:** Traverses the process hierarchy to map internal ptys (e.g. from shell wrappers or `kiro-cli-term`) back to the parent terminal emulator window/tab, ensuring AppleScript commands target valid tabs without freezing or erroring.
 - **Waits, then nudges:** at/after the reset it sends `continue` to the session's terminal
-  (Terminal.app / iTerm2 / tmux), with smart backoff retry (1 min, then 5 min up to 3 tries),
-  and posts a macOS notification.
-- **Fail-safe retry ceiling:** Retries are strictly capped at `MAX_RETRIES` (3 attempts), guaranteeing
-  the daemon never enters a runaway loop or floods AppleScript on detached terminals.
+  (Terminal.app / iTerm2 / tmux), and posts a macOS notification.
+- **Persistent escalating retry (the 2026-10-24 fix):** if a send *fails* (tab wedged,
+  terminal closed, Apple Event unresponsive), it retries with escalating backoff
+  (`RETRY_DELAYS_SECONDS`: 1m → 3m → 5m → 15m → 30m, held at 30m) until the transcript
+  confirms recovery or the session disappears. Previously 3 consecutive failures meant the
+  daemon gave up **permanently** (`logged_max`) and a transient failure during unattended
+  time turned into hours of dead air. The retry is still bounded (`RETRY_MAX_ATTEMPTS=20`,
+  ~7.75h ceiling) so a permanently-detached terminal can't be AppleScript-flooded; hitting the
+  ceiling pauses for 1h, after which it retries if the session still reads blocked.
+- **Diagnosable failures:** send results are logged verbatim (`app_not_running`,
+  `tab_not_found`, `timeout`, or the actual AppleScript error) — no more bare `error`.
 - **Confirms via the transcript:** once a normal assistant reply appears, it logs `[RESOLVED]`.
 
 Config constants are at the top of `claude_resume_daemon.py`:
-`CHECK_INTERVAL_SECONDS=30`, `MAX_RETRIES=3`, `GRACE_SECONDS=15`.
+`CHECK_INTERVAL_SECONDS=30`, `GRACE_SECONDS=15`, `RETRY_DELAYS_SECONDS`, `RETRY_MAX_ATTEMPTS`.
 
 ## Use it
 It's already installed and running under launchd (label `com.user.clauderesume`). Nothing to do
@@ -56,7 +63,9 @@ claude-resume uninstall
 
 ## Log lines you'll see
 - `[DETECTED] Session abc12345 … is rate-limit blocked; will resume after 2026-06-13 16:30 PDT`
-- `[ACTION]  Reset window elapsed — resuming … Attempt 1/3`
+- `[ACTION]  Reset window elapsed — resuming … Attempt 1...`
+- `[ERROR]   Failed to send resume to /dev/ttys003 (terminal). Result: app_not_running. Retrying in 60s (attempt 1).`
+- `[GIVE UP] 20 attempts on abc12345 without success. Pausing; will resume if the limit state changes.`
 - `[RESOLVED] Session abc12345 is no longer rate-limited`
 
 ## Test it without waiting for a real limit
