@@ -82,6 +82,7 @@ for tool in llm-serve llm-proxy.mjs qwen qwen-cli qwen-code openrouter-code clau
   chmod +x "$REPO_DIR/scripts/$tool"
 done
 echo "  installed: llm-serve, qwen, qwen-cli, qwen-code, openrouter-code, claude-local-subagent, lmstudio-setup (+ llm-proxy)"
+node -v >/dev/null 2>&1 || echo "  note: llm-proxy requires working Node.js — install/fix with 'brew install node' or 'brew upgrade node'"
 
 # LM Studio app as an assistant: search/visit plugins, MCP servers, preset. Non-fatal:
 # it needs LM Studio installed and quit.

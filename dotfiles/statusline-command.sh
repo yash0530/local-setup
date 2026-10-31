@@ -1,6 +1,7 @@
 #!/bin/bash
 
 input=$(cat)
+printf "%s" "$input" > ~/.claude/statusline_state.json 2>/dev/null
 
 model=$(echo "$input" | jq -r '.model.display_name // "Claude"')
 used=$(echo "$input" | jq -r '.context_window.used_percentage // empty')

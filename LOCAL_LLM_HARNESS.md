@@ -311,6 +311,7 @@ to detect.
 | Symptom | Cause / fix |
 |---|---|
 | `cannot reach the model server` | `llm-serve start` |
+| `dyld: Library not loaded: ... libllhttp.X.dylib` / proxy abort | Node shared library mismatch (common after `brew upgrade` touches dependencies like `llhttp`). Fix: `brew upgrade node` (or `brew reinstall node`). |
 | `claude local qwen38_27` says Splash is not installed | Install LM Studio and the Splash runtime + model (README §5.1). |
 | `model not downloaded: incoai/Qwen3.8-27B-Splash` | `lms get https://huggingface.co/incoai/Qwen3.8-27B-Splash` — the bare name hits LM Studio Hub. |
 | Plain `claude` starts using the local model | Something exported `ANTHROPIC_BASE_URL` globally. Check `env \| grep ANTHROPIC`. |

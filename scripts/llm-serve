@@ -197,6 +197,11 @@ wait_healthy() {
 
 start_proxy() {
   if is_running "$PROXY_PID"; then return 0; fi
+  if ! node -v >/dev/null 2>&1; then
+    echo "  proxy failed to start: node runtime is broken or missing (e.g. dyld library mismatch)" >&2
+    echo "  try: brew upgrade node (or brew reinstall node)" >&2
+    return 1
+  fi
   # WebSearch uses Brave when a key is on file. The key lives outside this repo, and
   # an exported BRAVE_API_KEY or SEARCH_BACKEND still wins.
   local brave_key="${BRAVE_API_KEY:-}"
