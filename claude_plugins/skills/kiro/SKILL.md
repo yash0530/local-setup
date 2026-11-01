@@ -25,6 +25,22 @@ Kiro carries the bulk of the straightforward implementation; you keep the judgme
 - **Shared checkout:** if anything else is running from the repo (a benchmark, a server), give Kiro its own `git worktree` so its edits can't change live scripts, then merge.
 - **Put hard rules in the spec:** which paths are off-limits, "static edits only / don't start servers", "don't push". Kiro follows the spec file closely.
 
+## Measuring cost exactly (learned 2026-11-01)
+- Kiro writes the credits of every turn to `~/.kiro/sessions/<hash>/sess_<id>/messages.jsonl` (`usage_summary` records);
+  `session.json` beside it names the working folder, agent profile, model and effort. So measure, don't ask the owner
+  for the app's usage %: `python3 scripts/kiro-usage.py --by prefix --since 2026-11-01T19:00` (UTC). Give each task its
+  own working folder so its cost is attributable. Roughly 10-11 credits = 1% of the monthly allowance (Nov 2026).
+- **Every tool call re-sends the whole context.** A Haiku reader making ~50 tool calls cost ~18 credits; the same work
+  as ONE call with the documents inline in the prompt cost 1.3-3.5. Telling the model "use no tools" is not enough
+  (red teams still made 20-40 calls); the default profile also adds overhead (~2.5 credits vs 0.3 for the same call).
+- **One-call pattern for bulk work:** put every input in the prompt (argv holds ~1 MB), run under a no-tools agent
+  profile, and have the model answer with JSON between markers that Python extracts and validates. The profile:
+  `~/.kiro/agents/fin-oneshot.json` (copy in `agents-kiro/`) with `"tools": [], "allowedTools": [], "includeMcpJson": false`, used as
+  `kiro-cli chat --no-interactive --agent fin-oneshot --model claude-haiku-5.5 --effort high "<prompt>"`.
+  Text output under `script -q /dev/null` is not wrapped, so long JSON lines survive. Retry a failed validation by
+  resuming (`-r`) with only the errors.
+- Output and thinking cost more than input: long JSON answers and max effort dominate a one-call task's credits.
+
 ## After it returns
 1. **Sync (always):** `git diff --stat` / `git status` to confirm real changes.
 2. **Review by judgment:** trust boilerplate, tests, and simple scripts. Read the diff line-by-line only for business logic, security, or DB migrations. `/kiro:review` buys a deeper second opinion cheaply.

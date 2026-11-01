@@ -1,0 +1,30 @@
+{
+  "name": "fin-oneshot",
+  "description": "Fin desk one-call agent: no tools; answers with JSON text only (fin-skill ADR-012 amendment 6)",
+  "prompt": null,
+  "mcpServers": {},
+  "tools": [],
+  "toolAliases": {},
+  "allowedTools": [],
+  "resources": [],
+  "hooks": [],
+  "toolsSettings": {},
+  "includeMcpJson": false,
+  "model": null,
+  "permissions": {
+    "rules": [
+      {
+        "capability": "fs_read",
+        "match": [
+          "./**"
+        ],
+        "effect": "allow"
+      }
+    ]
+  },
+  "kiroUpgrade": {
+    "revision": 2,
+    "fingerprint": "sha256:31b8855c3b6ab693012d361c3882adde5fe7b67856bf2c925b35afd4365f06ee",
+    "source": "sha256:2ba45bfc5e48d581dad0d6b9f77eafb1986a073bd4ec0163b9cd3d620dd6b154"
+  }
+}
