@@ -39,6 +39,8 @@ Kiro carries the bulk of the straightforward implementation; you keep the judgme
   `kiro-cli chat --no-interactive --agent fin-oneshot --model claude-haiku-5.5 --effort high "<prompt>"`.
   Text output under `script -q /dev/null` is not wrapped, so long JSON lines survive. Retry a failed validation by
   resuming (`-r`) with only the errors.
+- **Effort:** check the log for `[warn] failed to set effort`. Haiku 5.5's top level is `high` (`max` is not applied).
+  Kiro drops `--effort` when many sessions start in the same second; start bulk tasks a few seconds apart.
 - Output and thinking cost more than input: long JSON answers and max effort dominate a one-call task's credits.
 
 ## After it returns
