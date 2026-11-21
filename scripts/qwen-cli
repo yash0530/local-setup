@@ -1,20 +1,116 @@
 #!/usr/bin/env bash
-# qwen-cli [splash4]
+# qwen-cli [ornith35|inkling2|daisyrose27|splash4]
 #
-# Interactive terminal chat on the local Qwen 3.8 27B: brings the model up in LM Studio
-# (via llm-serve) and opens `lms chat`. Reasoning effort follows the model default here.
-# Ctrl-C to quit.
+# Interactive terminal chat on a local model: starts/switches the model via
+# llm-serve and launches `lms chat` (splash4) or a streaming OpenAI REPL (oMLX models).
+# Type /clear to reset context, /exit or Ctrl-C to quit.
 set -euo pipefail
 
+WANT_MODEL=""
+THINK="xhigh"
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    splash4) shift ;;
-    -h|--help) echo "usage: qwen-cli [splash4]"; exit 0 ;;
+    ornith35|ornith|ornith_35b|ornith-35b)             WANT_MODEL="ornith35"; shift ;;
+    inkling2|inkling2_mini|inkling|inkling2-oq3e)      WANT_MODEL="inkling2"; shift ;;
+    daisyrose27|daisyrose|daisyrose_27b|daisyrose-27b) WANT_MODEL="daisyrose27"; shift ;;
+    splash4|qwen38_27|qwen38_27b)                      WANT_MODEL="splash4"; shift ;;
+    --think)                                           THINK="${2:-xhigh}"; shift 2 ;;
+    -h|--help)
+      echo "usage: qwen-cli [ornith35|inkling2|daisyrose27|splash4] [--think LEVEL]"
+      exit 0 ;;
     *) echo "qwen-cli: unknown arg '$1'" >&2; exit 1 ;;
   esac
 done
 
-LMS="$(command -v lms 2>/dev/null || echo "${HOME}/.lmstudio/bin/lms")"
-llm-serve start splash4
-echo "qwen-cli: splash4 via lms chat — Ctrl-C to quit"
-exec "$LMS" chat qwen-local
+STATE_DIR="${HOME}/.local/state/local-llm"
+if [[ -n "$WANT_MODEL" ]]; then
+  llm-serve start "$WANT_MODEL"
+elif ! curl -sf "http://127.0.0.1:${LLAMA_PORT:-8089}/v1/models" >/dev/null 2>&1; then
+  llm-serve start
+fi
+
+CUR="$(cat "${STATE_DIR}/current" 2>/dev/null || echo ornith35)"
+if [[ "$CUR" == "splash4" ]]; then
+  LMS="$(command -v lms 2>/dev/null || echo "${HOME}/.lmstudio/bin/lms")"
+  echo "qwen-cli: splash4 via lms chat — Ctrl-C to quit"
+  exec "$LMS" chat qwen-local
+fi
+
+UPSTREAM="http://127.0.0.1:${LLAMA_PORT:-8089}/v1"
+MODEL="$(cat "${STATE_DIR}/upstream_model" 2>/dev/null || echo "$CUR")"
+FAMILY="$(cat "${STATE_DIR}/family" 2>/dev/null || echo qwen3.8)"
+TOP_P="$(cat "${STATE_DIR}/top_p" 2>/dev/null || echo 0.95)"
+
+echo "qwen-cli: ${CUR} (${FAMILY}, think=${THINK}) on ${UPSTREAM} — /clear, /exit, or Ctrl-C"
+exec node --input-type=module - "$UPSTREAM" "$MODEL" "$FAMILY" "$THINK" "$TOP_P" <<'EOF'
+import * as readline from "node:readline/promises";
+import { stdin as input, stdout as output } from "node:process";
+
+const [, , upstream, model, family, initialThink, topPStr] = process.argv;
+let effort = initialThink;
+const topP = Number(topPStr) || 0.95;
+let messages = [];
+
+const rl = readline.createInterface({ input, output });
+rl.on("SIGINT", () => { output.write("\n"); process.exit(0); });
+
+while (true) {
+  let line;
+  try {
+    line = await rl.question("\n> ");
+  } catch {
+    break;
+  }
+  const trimmed = line.trim();
+  if (!trimmed) continue;
+  if (trimmed === "/exit" || trimmed === "/quit") break;
+  if (trimmed === "/clear") { messages = []; output.write("cleared conversation\n"); continue; }
+  if (trimmed.startsWith("/think ")) { effort = trimmed.slice(7).trim() || effort; output.write(`think=${effort}\n`); continue; }
+
+  messages.push({ role: "user", content: line });
+  const body = { model, messages, temperature: 1.0, top_p: topP, stream: true };
+  if (family === "inkling2" && (effort === "none" || effort === "off")) body.reasoning_effort = "none";
+  else if (effort === "off" || effort === "none") body.chat_template_kwargs = { enable_thinking: false };
+  else body.reasoning_effort = effort;
+
+  const res = await fetch(`${upstream}/chat/completions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    output.write(`[error ${res.status}] ${(await res.text()).slice(0, 300)}\n`);
+    messages.pop();
+    continue;
+  }
+
+  const decoder = new TextDecoder();
+  let buf = "", full = "", inThink = false;
+  for await (const chunk of res.body) {
+    buf += decoder.decode(chunk, { stream: true });
+    const lines = buf.split("\n");
+    buf = lines.pop() ?? "";
+    for (const l of lines) {
+      const t = l.trim();
+      if (!t.startsWith("data:")) continue;
+      const p = t.slice(5).trim();
+      if (!p || p === "[DONE]") continue;
+      let evt; try { evt = JSON.parse(p); } catch { continue; }
+      const d = evt.choices?.[0]?.delta;
+      const rc = d?.reasoning_content || d?.reasoning;
+      if (rc) {
+        if (!inThink) { output.write("\n[thinking] "); inThink = true; }
+        output.write(rc);
+      }
+      if (d?.content) {
+        if (inThink) { output.write("\n\n"); inThink = false; }
+        output.write(d.content);
+        full += d.content;
+      }
+    }
+  }
+  output.write("\n");
+  if (full) messages.push({ role: "assistant", content: full });
+}
+rl.close();
+EOF

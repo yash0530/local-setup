@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
-# llm-serve — start/stop the local Qwen 3.8 27B stack (model server + Anthropic proxy).
+# llm-serve — start/stop the local LLM stack (oMLX / LM Studio Splash + Anthropic proxy).
 #
-#   llm-serve start [splash4]
-#     splash4 (the only model) is incoai/Qwen3.8-27B-Splash (4-bit + DFlash2) on LM
-#     Studio's Splash engine.
+#   llm-serve start [ornith35|inkling2|daisyrose27|splash4]
+#     ornith35     Ornith-1.5-35B-A3B oQ4e-mtp on oMLX v0.8.1 + MTP (default)
+#     inkling2     Thinking Machines Inkling-2-Mini oQ3e-mtp on oMLX + DSpark (TF32=0)
+#     daisyrose27  DaisyRose-27B (pure-RL Qwen 3.8) oQ4e-mtp on oMLX + MTP
+#     splash4      incoai/Qwen3.8-27B-Splash (4-bit + DFlash2) on LM Studio Splash
 #   llm-serve stop              stop everything
 #   llm-serve status            what's running, and whether it answers
 #   llm-serve restart [model]   stop then start
@@ -20,28 +22,125 @@ mkdir -p "$LOG_DIR"
 SERVER_PID="${STATE_DIR}/server.pid"
 PROXY_PID="${STATE_DIR}/proxy.pid"
 CURRENT="${STATE_DIR}/current"
+ENGINE_FILE="${STATE_DIR}/engine"
+UPSTREAM_MODEL_FILE="${STATE_DIR}/upstream_model"
+FAMILY_FILE="${STATE_DIR}/family"
+CTX_FILE="${STATE_DIR}/ctx"
+TEMP_FILE="${STATE_DIR}/temp"
+TOP_P_FILE="${STATE_DIR}/top_p"
+
 SERVER_LOG="${LOG_DIR}/server.log"
 PROXY_LOG="${LOG_DIR}/proxy.log"
 BRAVE_KEY_FILE="${HOME}/.config/local-llm/brave_api_key"
 
+OMLX_BASE="${STATE_DIR}/omlx-base"
+OMLX_MODELS="${STATE_DIR}/omlx-models"
+OMLX_CACHE="${STATE_DIR}/omlx-cache"
+
 LLAMA_PORT="${LLAMA_PORT:-8089}"
 PROXY_PORT="${PROXY_PORT:-8790}"
-CTX="${LLM_SPLASH_CTX:-${LLM_CTX:-262144}}"
 
-# Reasoning effort, forwarded by the proxy on every request. Qwen 3.8's template has
-# exactly three levels; anything else is a template error, so spellings are normalised.
-normalize_effort() { # effort -> low|medium|xhigh, or fail
+# --- model registry ------------------------------------------------------------
+MODEL_ALIASES="ornith35 inkling2 daisyrose27 splash4"
+DEFAULT_MODEL="ornith35"
+
+canonical_model() {
   case "$(echo "${1:-}" | tr 'A-Z' 'a-z')" in
-    xhigh|high|max|x-high|extra-high) echo xhigh ;;
-    medium|med|default)                echo medium ;;
-    low|minimal|min)                   echo low ;;
-    *) echo "invalid reasoning effort '${1:-}' (expected low, medium or xhigh)" >&2; return 1 ;;
+    "" ) echo "$DEFAULT_MODEL" ;;
+    ornith35|ornith|ornith_35b|ornith-35b)       echo "ornith35" ;;
+    inkling2|inkling2_mini|inkling|inkling2-oq3e) echo "inkling2" ;;
+    daisyrose27|daisyrose|daisyrose_27b|daisyrose-27b) echo "daisyrose27" ;;
+    splash4|qwen38_27|qwen38_27b)                echo "splash4" ;;
+    *) return 1 ;;
   esac
 }
-LLM_EFFORT="$(normalize_effort "${LLM_EFFORT:-xhigh}")" || exit 1
 
-# Resolve the real script location: it is run via a symlink in ~/.local/bin, and repo
-# files (dotfiles/lmstudio) are found relative to the repo, not the symlink.
+model_engine() {
+  case "$1" in
+    splash4) echo "splash" ;;
+    ornith35|inkling2|daisyrose27) echo "omlx" ;;
+    *) return 1 ;;
+  esac
+}
+
+model_family() {
+  case "$1" in
+    inkling2) echo "inkling2" ;;
+    ornith35|daisyrose27|splash4) echo "qwen3.8" ;;
+    *) echo "qwen3.8" ;;
+  esac
+}
+
+model_dir() {
+  local base="${LLM_MODELS_DIR:-${HOME}/Models}"
+  case "$1" in
+    ornith35)    echo "${base}/ornith-35b-a3b-oq4e-mtp" ;;
+    inkling2)    echo "${base}/inkling2-mini-oq3e-mtp" ;;
+    daisyrose27) echo "${base}/daisyrose-27b-oq4e-mtp" ;;
+    *) return 1 ;;
+  esac
+}
+
+model_ctx() {
+  case "$1" in
+    ornith35)    echo "${LLM_ORNITH_CTX:-${LLM_CTX:-262144}}" ;;
+    inkling2)    echo "${LLM_INKLING_CTX:-${LLM_CTX:-131072}}" ;;
+    daisyrose27) echo "${LLM_DAISY_CTX:-${LLM_CTX:-131072}}" ;;
+    splash4)     echo "${LLM_SPLASH_CTX:-${LLM_CTX:-262144}}" ;;
+    *) echo "${LLM_CTX:-262144}" ;;
+  esac
+}
+
+model_temp() {
+  echo "1.0"
+}
+
+model_top_p() {
+  case "$1" in
+    inkling2) echo "1.0" ;;
+    *) echo "0.95" ;;
+  esac
+}
+
+model_upstream_id() {
+  case "$1" in
+    splash4) echo "qwen-local" ;;
+    *) echo "$1" ;;
+  esac
+}
+
+model_splash_key() {
+  case "$1" in
+    splash4) echo "local/qwen3.8-27b-splash" ;;
+    *) return 1 ;;
+  esac
+}
+
+normalize_effort() { # <effort> <family>
+  local eff fam
+  eff="$(echo "${1:-xhigh}" | tr 'A-Z' 'a-z')"
+  fam="${2:-qwen3.8}"
+  if [[ "$fam" == "inkling2" ]]; then
+    case "$eff" in
+      none|off|0)                      echo none ;;
+      minimal|min)                     echo minimal ;;
+      low)                             echo low ;;
+      medium|med|default)              echo medium ;;
+      high)                            echo high ;;
+      xhigh|max|x-high|extra-high)     echo xhigh ;;
+      *) echo "invalid inkling2 reasoning effort '${1:-}' (expected none|minimal|low|medium|high|xhigh)" >&2; return 1 ;;
+    esac
+  else
+    case "$eff" in
+      xhigh|high|max|x-high|extra-high) echo xhigh ;;
+      medium|med|default)                echo medium ;;
+      low|minimal|min)                   echo low ;;
+      *) echo "invalid reasoning effort '${1:-}' (expected low, medium or xhigh)" >&2; return 1 ;;
+    esac
+  fi
+}
+
+# Resolve real script dir so relative dotfiles paths work even via ~/.local/bin symlink.
 _self="${BASH_SOURCE[0]}"
 while [[ -L "$_self" ]]; do
   _link="$(readlink "$_self")"
@@ -50,30 +149,23 @@ done
 SCRIPT_DIR="$(cd "$(dirname "$_self")" && pwd)"
 PROXY_JS="${SCRIPT_DIR}/llm-proxy.mjs"
 
-# --- model registry ------------------------------------------------------------
-MODEL_ALIASES="splash4"
-DEFAULT_MODEL="splash4"
-
-# An LM Studio model key, not a file: the virtual model from dotfiles/lmstudio/, which
-# exposes reasoning_effort (the bare download makes LM Studio drop that field).
-model_key() {
-  case "$1" in
-    splash4) echo "local/qwen3.8-27b-splash" ;;
-    *) return 1 ;;
-  esac
-}
-
-# `lms bootstrap` puts lms on PATH, but a fresh install only has ~/.lmstudio/bin.
 LMS="${LLM_LMS:-$(command -v lms 2>/dev/null || echo "${HOME}/.lmstudio/bin/lms")}"
-# The downloaded weights the virtual model wraps, as `lms ls` names them.
 SPLASH_BASE_NAME="Qwen3.8-27B-Splash"
-# A hub model is a manifest.json (base-weights dependency) plus model.yaml (the override).
 SPLASH_VIRTUAL_SRC="$(cd "$SCRIPT_DIR/.." && pwd)/dotfiles/lmstudio/qwen3.8-27b-splash"
 SPLASH_VIRTUAL_DST="${HOME}/.lmstudio/hub/models/local/qwen3.8-27b-splash"
 
-# Keep LM Studio's copy of the virtual model in step with the repo (picked up on next load).
-# LM Studio re-indexes on change; a rejected model.yaml shows up as a ZodError in
-# ~/Library/Logs/LM Studio.
+find_omlx_cli() {
+  if [[ -n "${LLM_OMLX_CLI:-}" && -x "${LLM_OMLX_CLI}" ]]; then
+    echo "${LLM_OMLX_CLI}"
+  elif [[ -x "/Applications/oMLX.app/Contents/MacOS/omlx-cli" ]]; then
+    echo "/Applications/oMLX.app/Contents/MacOS/omlx-cli"
+  elif command -v omlx-cli >/dev/null 2>&1; then
+    command -v omlx-cli
+  else
+    return 1
+  fi
+}
+
 ensure_splash_virtual_model() {
   local f changed=0
   mkdir -p "$SPLASH_VIRTUAL_DST"
@@ -85,18 +177,36 @@ ensure_splash_virtual_model() {
   done
   if [[ $changed == 1 ]]; then
     echo "  installed LM Studio virtual model local/qwen3.8-27b-splash"
-    sleep 3  # give the indexer a moment before `lms load` looks the key up
+    sleep 3
   fi
 }
 
-model_family() { echo "qwen3.8"; }
+clear_state_metadata() {
+  rm -f "$CURRENT" "$ENGINE_FILE" "$UPSTREAM_MODEL_FILE" "$FAMILY_FILE" "$CTX_FILE" "$TEMP_FILE" "$TOP_P_FILE"
+}
+
+write_state_metadata() {
+  local alias="$1"
+  local eng fam upstream ctx temp top_p
+  eng="$(model_engine "$alias")"
+  fam="$(model_family "$alias")"
+  upstream="$(model_upstream_id "$alias")"
+  ctx="$(model_ctx "$alias")"
+  temp="$(model_temp "$alias")"
+  top_p="$(model_top_p "$alias")"
+  echo "$alias" >"$CURRENT"
+  echo "$eng" >"$ENGINE_FILE"
+  echo "$upstream" >"$UPSTREAM_MODEL_FILE"
+  echo "$fam" >"$FAMILY_FILE"
+  echo "$ctx" >"$CTX_FILE"
+  echo "$temp" >"$TEMP_FILE"
+  echo "$top_p" >"$TOP_P_FILE"
+}
 
 is_running() { # pidfile
   [[ -f "$1" ]] && kill -0 "$(cat "$1")" 2>/dev/null
 }
 
-# An interrupted `start` can leave a live daemon with no pidfile; trust the listening
-# socket over the file.
 adopt_orphan() { # port pidfile
   local pid
   pid="$(lsof -nP -iTCP:"$1" -sTCP:LISTEN -t 2>/dev/null | head -1)"
@@ -105,21 +215,32 @@ adopt_orphan() { # port pidfile
   echo "$pid" >"$2"
 }
 
-# Recover `current` from the running server's argv so `status` and `which` don't lie.
 reconcile() {
   is_running "$SERVER_PID" || adopt_orphan "$LLAMA_PORT" "$SERVER_PID" || true
   is_running "$PROXY_PID" || adopt_orphan "$PROXY_PORT" "$PROXY_PID" || true
 
-  if [[ ! -s "$CURRENT" ]] && is_running "$SERVER_PID"; then
+  if is_running "$SERVER_PID" && [[ ! -s "$CURRENT" ]]; then
     local argv
-    argv="$(ps -o command= -p "$(cat "$SERVER_PID")" 2>/dev/null)"
-    case "$argv" in *"LM Studio"*|*lmstudio*|*llmster*) echo "splash4" >"$CURRENT" ;; esac
+    argv="$(ps -o command= -p "$(cat "$SERVER_PID")" 2>/dev/null || true)"
+    case "$argv" in
+      *"LM Studio"*|*lmstudio*|*llmster*)
+        write_state_metadata "splash4"
+        ;;
+      *omlx*)
+        local link alias=""
+        for link in "${OMLX_MODELS}/"*; do
+          [[ -e "$link" ]] && alias="$(basename "$link")" && break
+        done
+        if [[ -n "$alias" ]] && canonical_model "$alias" >/dev/null 2>&1; then
+          write_state_metadata "$(canonical_model "$alias")"
+        else
+          echo "omlx" >"$ENGINE_FILE"
+        fi
+        ;;
+    esac
   fi
 }
 
-# Run a daemon in its own session. nohup alone leaves it in the caller's process group,
-# so Ctrl-C or a closing terminal kills it. macOS has no setsid(1), so use perl.
-# Always call as `detach cmd ... &`: the exec keeps $! as the daemon's own pid.
 detach() { # cmd args...
   exec perl -e 'use POSIX (); POSIX::setsid(); exec @ARGV or die "exec failed: $!"' -- "$@"
 }
@@ -133,7 +254,6 @@ stop_pidfile() { # pidfile label
       kill -0 "$pid" 2>/dev/null || break
       sleep 0.2
     done
-    # SIGKILL is async: the listening socket is only released once the process reaps.
     if kill -0 "$pid" 2>/dev/null; then
       kill -9 "$pid" 2>/dev/null || true
       for _ in $(seq 1 50); do
@@ -145,7 +265,6 @@ stop_pidfile() { # pidfile label
   rm -f "$1"
 }
 
-# True while any TCP socket holds the port, including TIME_WAIT sockets `lsof` can't see.
 port_in_use() { # port
   netstat -an -p tcp 2>/dev/null | awk -v suffix=".$1" '
     NR > 2 && length($4) > length(suffix) &&
@@ -153,8 +272,6 @@ port_in_use() { # port
     END { exit !found }'
 }
 
-# A lingering TIME_WAIT socket on the server port can make the next bind fail.
-# Wait it out rather than race it.
 wait_port_free() { # port
   port_in_use "$1" || return 0
   echo "  waiting for port $1 to clear"
@@ -169,16 +286,41 @@ wait_port_free() { # port
   return 1
 }
 
-# LM Studio has no /health, only the OpenAI routes.
 HEALTH_URL="http://127.0.0.1:${LLAMA_PORT}/v1/models"
 
-# Splash lives inside LM Studio, so killing the pid on the port would take the app down.
 stop_server() {
-  is_running "$SERVER_PID" || [[ -s "$CURRENT" ]] || return 0
-  echo "  unloading LM Studio model and stopping its server"
-  "$LMS" unload --all >/dev/null 2>&1 || true
-  "$LMS" server stop >/dev/null 2>&1 || true
-  rm -f "$SERVER_PID"
+  local eng argv=""
+  eng="$(cat "$ENGINE_FILE" 2>/dev/null || echo "")"
+  if is_running "$SERVER_PID"; then
+    argv="$(ps -o command= -p "$(cat "$SERVER_PID")" 2>/dev/null || true)"
+  fi
+
+  if [[ "$eng" == "splash" || "$argv" == *"LM Studio"* || "$argv" == *lmstudio* || "$argv" == *llmster* ]]; then
+    if [[ -x "$LMS" ]]; then
+      echo "  unloading LM Studio model and stopping its server"
+      "$LMS" unload --all >/dev/null 2>&1 || true
+      "$LMS" server stop >/dev/null 2>&1 || true
+    fi
+    rm -f "$SERVER_PID"
+  fi
+
+  if is_running "$SERVER_PID"; then
+    stop_pidfile "$SERVER_PID" "model server"
+  else
+    rm -f "$SERVER_PID"
+  fi
+
+  # Safety sweep if anything non-LM-Studio is still holding :LLAMA_PORT
+  local stray
+  stray="$(lsof -nP -iTCP:"$LLAMA_PORT" -sTCP:LISTEN -t 2>/dev/null | head -1 || true)"
+  if [[ -n "$stray" ]]; then
+    local s_cmd; s_cmd="$(ps -o command= -p "$stray" 2>/dev/null || true)"
+    if [[ "$s_cmd" == *omlx* || "$s_cmd" == *llama* ]]; then
+      echo "  stopping remaining listener on :${LLAMA_PORT} (pid $stray)"
+      kill "$stray" 2>/dev/null || true
+      sleep 1
+    fi
+  fi
 }
 
 wait_healthy() {
@@ -202,42 +344,47 @@ start_proxy() {
     echo "  try: brew upgrade node (or brew reinstall node)" >&2
     return 1
   fi
-  # WebSearch uses Brave when a key is on file. The key lives outside this repo, and
-  # an exported BRAVE_API_KEY or SEARCH_BACKEND still wins.
+  local cur fam upstream temp top_p effort
+  cur="$(cat "$CURRENT" 2>/dev/null || echo "$DEFAULT_MODEL")"
+  fam="$(cat "$FAMILY_FILE" 2>/dev/null || model_family "$cur")"
+  upstream="$(cat "$UPSTREAM_MODEL_FILE" 2>/dev/null || model_upstream_id "$cur")"
+  temp="$(cat "$TEMP_FILE" 2>/dev/null || model_temp "$cur")"
+  top_p="$(cat "$TOP_P_FILE" 2>/dev/null || model_top_p "$cur")"
+  effort="$(normalize_effort "${LLM_EFFORT:-xhigh}" "$fam")" || return 1
+
   local brave_key="${BRAVE_API_KEY:-}"
   if [[ -z "$brave_key" && -r "$BRAVE_KEY_FILE" ]]; then
     brave_key="$(tr -d '[:space:]' <"$BRAVE_KEY_FILE")"
   fi
   local search_backend="${SEARCH_BACKEND:-}"
   if [[ -z "$search_backend" && -n "$brave_key" ]]; then search_backend=brave; fi
-  # LM Studio serves the model as `qwen-local`. THINK_VIEW=native renders reasoning in
-  # Claude Code's own thinking UI; off|status|text are the alternatives.
+
   BRAVE_API_KEY="$brave_key" \
   SEARCH_BACKEND="$search_backend" \
-  MODEL="qwen-local" \
+  MODEL="$upstream" \
+  MODEL_FAMILY="$fam" \
+  DEFAULT_TEMP="$temp" \
+  DEFAULT_TOP_P="$top_p" \
   UPSTREAM="http://127.0.0.1:${LLAMA_PORT}/v1" \
   PORT="${PROXY_PORT}" \
   THINK_VIEW="${THINK_VIEW:-native}" \
-  REASONING_EFFORT="${LLM_EFFORT:-}" \
+  REASONING_EFFORT="$effort" \
     detach node "$PROXY_JS" >"$PROXY_LOG" 2>&1 &
   echo $! >"$PROXY_PID"
   sleep 1
   if is_running "$PROXY_PID"; then
-    echo "  proxy    up on http://127.0.0.1:${PROXY_PORT}  (Anthropic API)"
+    echo "  proxy    up on http://127.0.0.1:${PROXY_PORT}  (Anthropic API, model=${upstream}, family=${fam}, think=${effort})"
   else
     echo "  proxy failed to start — see $PROXY_LOG" >&2
     tail -10 "$PROXY_LOG" >&2
   fi
 }
 
-cmd_start() {
-  reconcile
-  local model="${1:-$DEFAULT_MODEL}"
-  local key
-  if ! key="$(model_key "$model")"; then
-    echo "unknown model '$model' (expected one of: ${MODEL_ALIASES})" >&2
-    exit 1
-  fi
+start_splash_backend() {
+  local model="$1"
+  local key ctx
+  key="$(model_splash_key "$model")"
+  ctx="$(model_ctx "$model")"
   if [[ ! -x "$LMS" ]]; then
     echo "LM Studio CLI not found (looked for lms on PATH and ${HOME}/.lmstudio/bin/lms)" >&2
     echo "install LM Studio, run ~/.lmstudio/bin/lms bootstrap, then: lms runtime get splash" >&2
@@ -248,6 +395,136 @@ cmd_start() {
     echo "download it first:  lms get https://huggingface.co/incoai/Qwen3.8-27B-Splash" >&2
     exit 1
   fi
+  ensure_splash_virtual_model || exit 1
+  echo "starting qwen3.8-${model} (LM Studio Splash, ctx ${ctx})"
+  "$LMS" server start --port "$LLAMA_PORT" >"$SERVER_LOG" 2>&1 || {
+    echo "  lms server start failed:" >&2; tail -20 "$SERVER_LOG" >&2; exit 1; }
+  write_state_metadata "$model"
+  "$LMS" load "$key" --identifier qwen-local --context-length "$ctx" \
+    --gpu max -y >>"$SERVER_LOG" 2>&1 || {
+    echo "  lms load failed:" >&2; tail -20 "$SERVER_LOG" >&2
+    "$LMS" server stop >/dev/null 2>&1 || true; clear_state_metadata; exit 1; }
+  lsof -nP -iTCP:"$LLAMA_PORT" -sTCP:LISTEN -t 2>/dev/null | head -1 >"$SERVER_PID"
+  wait_healthy || { clear_state_metadata; exit 1; }
+  echo "  LM Studio (Splash) up on http://127.0.0.1:${LLAMA_PORT}  (OpenAI API)"
+}
+
+start_omlx_backend() {
+  local model="$1"
+  local mdir fam ctx temp top_p omlx_cli
+  omlx_cli="$(find_omlx_cli)" || {
+    echo "oMLX CLI not found (install oMLX.app to /Applications/oMLX.app)" >&2
+    exit 1
+  }
+  mdir="$(model_dir "$model")"
+  if [[ ! -d "$mdir" ]]; then
+    echo "model weights missing: $mdir" >&2
+    exit 1
+  fi
+  fam="$(model_family "$model")"
+  ctx="$(model_ctx "$model")"
+  temp="$(model_temp "$model")"
+  top_p="$(model_top_p "$model")"
+
+  rm -rf "$OMLX_MODELS"
+  mkdir -p "$OMLX_MODELS" "$OMLX_BASE" "$OMLX_CACHE"
+  ln -sfn "$mdir" "${OMLX_MODELS}/${model}"
+
+  cat >"${OMLX_BASE}/model_settings.json" <<EOF
+{
+  "version": 1,
+  "models": {
+    "${model}": {
+      "mtp_enabled": true,
+      "dflash_enabled": false,
+      "turboquant_kv_enabled": false,
+      "temperature": ${temp},
+      "top_p": ${top_p},
+      "force_sampling": false
+    }
+  }
+}
+EOF
+
+  cat >"${OMLX_BASE}/settings.json" <<EOF
+{
+  "server": {
+    "host": "127.0.0.1",
+    "port": ${LLAMA_PORT}
+  },
+  "auth": {
+    "skip_api_key_verification": true
+  },
+  "cache": {
+    "paged_ssd_cache_dir": "${OMLX_CACHE}",
+    "paged_ssd_cache_max_size": "40GB",
+    "hot_cache_max_size": "2GB",
+    "hot_cache_write_through": true
+  }
+}
+EOF
+
+  echo "starting ${fam}-${model} (oMLX v0.8.1, ctx ${ctx})"
+  local tf32_flag=""
+  if [[ "$fam" == "inkling2" ]]; then
+    tf32_flag="0"
+  fi
+
+  if [[ -n "$tf32_flag" ]]; then
+    MLX_ENABLE_TF32="$tf32_flag" detach "$omlx_cli" serve \
+      --model-dir "$OMLX_MODELS" \
+      --base-path "$OMLX_BASE" \
+      --host 127.0.0.1 \
+      --port "$LLAMA_PORT" \
+      --no-hf-cache \
+      --headless \
+      --memory-guard-gb 46 \
+      --paged-ssd-cache-dir "$OMLX_CACHE" \
+      --paged-ssd-cache-max-size 40GB \
+      --hot-cache-max-size 2GB \
+      --hot-cache-write-through \
+      --max-concurrent-requests 2 \
+      --log-level info >"$SERVER_LOG" 2>&1 &
+  else
+    detach "$omlx_cli" serve \
+      --model-dir "$OMLX_MODELS" \
+      --base-path "$OMLX_BASE" \
+      --host 127.0.0.1 \
+      --port "$LLAMA_PORT" \
+      --no-hf-cache \
+      --headless \
+      --memory-guard-gb 46 \
+      --paged-ssd-cache-dir "$OMLX_CACHE" \
+      --paged-ssd-cache-max-size 40GB \
+      --hot-cache-max-size 2GB \
+      --hot-cache-write-through \
+      --max-concurrent-requests 2 \
+      --log-level info >"$SERVER_LOG" 2>&1 &
+  fi
+  echo $! >"$SERVER_PID"
+  write_state_metadata "$model"
+  wait_healthy || { stop_pidfile "$SERVER_PID" "omlx"; clear_state_metadata; exit 1; }
+
+  echo "  preloading ${model}..."
+  if ! curl -sf --max-time 240 -X POST -H "Content-Type: application/json" -d '{}' \
+      "http://127.0.0.1:${LLAMA_PORT}/v1/models/${model}/load" >/dev/null 2>&1; then
+    echo "  warning: explicit preload returned non-zero (model will lazy-load on first request)" >&2
+  fi
+  echo "  oMLX up on http://127.0.0.1:${LLAMA_PORT}  (OpenAI API, model=${model})"
+}
+
+cmd_start() {
+  reconcile
+  local raw="${1:-$DEFAULT_MODEL}"
+  local model eng fam
+  if ! model="$(canonical_model "$raw")"; then
+    echo "unknown model '$raw' (expected one of: ${MODEL_ALIASES})" >&2
+    exit 1
+  fi
+  eng="$(model_engine "$model")"
+  fam="$(model_family "$model")"
+  # Validate LLM_EFFORT early before tearing down or starting a server
+  normalize_effort "${LLM_EFFORT:-xhigh}" "$fam" >/dev/null || exit 1
 
   if is_running "$SERVER_PID"; then
     local cur; cur="$(cat "$CURRENT" 2>/dev/null || echo '?')"
@@ -257,28 +534,17 @@ cmd_start() {
       return 0
     fi
     echo "switching ${cur} -> ${model}"
-    # Stop the proxy first: whichever side closes a keep-alive connection lands in
-    # TIME_WAIT, and it must not be the server's port.
     stop_pidfile "$PROXY_PID" "proxy"
     stop_server
+    clear_state_metadata
   fi
 
   wait_port_free "$LLAMA_PORT" || exit 1
 
-  # LM Studio owns the drafter and mlock; sampling and reasoning_effort come per-request.
-  ensure_splash_virtual_model || exit 1
-  echo "starting $(model_family "$model")-${model} (LM Studio Splash, ctx ${CTX})"
-  "$LMS" server start --port "$LLAMA_PORT" >"$SERVER_LOG" 2>&1 || {
-    echo "  lms server start failed:" >&2; tail -20 "$SERVER_LOG" >&2; exit 1; }
-  echo "$model" >"$CURRENT"
-  "$LMS" load "$key" --identifier qwen-local --context-length "$CTX" \
-    --gpu max -y >>"$SERVER_LOG" 2>&1 || {
-    echo "  lms load failed:" >&2; tail -20 "$SERVER_LOG" >&2
-    "$LMS" server stop >/dev/null 2>&1 || true; rm -f "$CURRENT"; exit 1; }
-  # Record the listener so is_running/status can track it.
-  lsof -nP -iTCP:"$LLAMA_PORT" -sTCP:LISTEN -t 2>/dev/null | head -1 >"$SERVER_PID"
-  wait_healthy || exit 1
-  echo "  LM Studio (Splash) up on http://127.0.0.1:${LLAMA_PORT}  (OpenAI API)"
+  case "$eng" in
+    splash) start_splash_backend "$model" ;;
+    omlx)   start_omlx_backend "$model" ;;
+  esac
   start_proxy
 }
 
@@ -287,31 +553,35 @@ cmd_stop() {
   echo "stopping local LLM stack"
   stop_pidfile "$PROXY_PID" "proxy"
   stop_server
-  rm -f "$CURRENT"
+  clear_state_metadata
   echo "  done"
 }
 
 cmd_status() {
   reconcile
-  local model; model="$(cat "$CURRENT" 2>/dev/null || echo '-')"
+  local model eng fam ctx
+  model="$(cat "$CURRENT" 2>/dev/null || echo '-')"
+  eng="$(cat "$ENGINE_FILE" 2>/dev/null || echo 'server')"
+  fam="$(cat "$FAMILY_FILE" 2>/dev/null || echo '-')"
+  ctx="$(cat "$CTX_FILE" 2>/dev/null || echo '-')"
   if is_running "$SERVER_PID"; then
     local rss
-    rss="$(ps -o rss= -p "$(cat "$SERVER_PID")" | awk '{printf "%.1f GB", $1/1048576}')"
-    echo "lmstudio      running   model=$(model_family "$model")-${model}  port=${LLAMA_PORT}  rss=${rss}"
+    rss="$(ps -o rss= -p "$(cat "$SERVER_PID")" 2>/dev/null | awk '{printf "%.1f GB", $1/1048576}')"
+    printf "%-13s running   model=%s-%s  port=%s  ctx=%s  rss=%s\n" "$eng" "$fam" "$model" "$LLAMA_PORT" "$ctx" "${rss:-?}"
   else
-    echo "lmstudio      stopped"
+    echo "model server  stopped"
   fi
 
   if is_running "$PROXY_PID"; then
-    local eff
-    eff="$(curl -sf --max-time 5 "http://127.0.0.1:${PROXY_PORT}/health" 2>/dev/null \
-      | sed -n 's/.*"effort":"\([a-z]*\)".*/\1/p')"
-    echo "proxy         running   port=${PROXY_PORT}  think=${eff:-?}"
+    local hj eff p_fam
+    hj="$(curl -sf --max-time 5 "http://127.0.0.1:${PROXY_PORT}/health" 2>/dev/null || echo '{}')"
+    eff="$(printf '%s' "$hj" | sed -n 's/.*"effort":"\([^"]*\)".*/\1/p')"
+    p_fam="$(printf '%s' "$hj" | sed -n 's/.*"family":"\([^"]*\)".*/\1/p')"
+    echo "proxy         running   port=${PROXY_PORT}  family=${p_fam:-?}  think=${eff:-?}"
   else
     echo "proxy         stopped"
   fi
 
-  # --max-time: a long generation can hold the server and would hang `status`.
   if curl -sf --max-time 5 "$HEALTH_URL" >/dev/null 2>&1; then
     echo "health        ok"
   else
@@ -322,12 +592,12 @@ cmd_status() {
 case "${1:-status}" in
   start)   shift; cmd_start "${1:-$DEFAULT_MODEL}" ;;
   stop)    cmd_stop ;;
-  # Read $CURRENT before cmd_stop deletes it, so a bare restart keeps the resident model.
   restart)
     shift
     _want="${1:-$(cat "$CURRENT" 2>/dev/null || echo "$DEFAULT_MODEL")}"
     cmd_stop; cmd_start "$_want" ;;
   restart-proxy)
+    reconcile
     stop_pidfile "$PROXY_PID" "proxy"
     start_proxy ;;
   status)  cmd_status ;;
@@ -335,10 +605,16 @@ case "${1:-status}" in
   logs)
     case "${2:-server}" in
       proxy)  tail -f "$PROXY_LOG" ;;
-      # LM Studio keeps its own log; ours only has the start/load output.
-      *)       exec "$LMS" log stream ;;
+      *)
+        _eng="$(cat "$ENGINE_FILE" 2>/dev/null || echo "")"
+        if [[ "$_eng" == "splash" ]]; then
+          exec "$LMS" log stream
+        else
+          tail -f "$SERVER_LOG"
+        fi
+        ;;
     esac ;;
   *)
-    grep '^#' "$0" | sed -n '2,12p' | sed -E 's/^# ?//'
+    grep '^#' "$0" | sed -n '2,14p' | sed -E 's/^# ?//'
     exit 1 ;;
 esac

@@ -1,8 +1,8 @@
 # Developer Setup: Local Agentic & LLM Environment
 
-An optimized, production-ready environment setup for macOS (Apple Silicon MacBook Pro M5 Pro 64GB) combining Claude Code, Google Antigravity CLI (`agy`), Kiro CLI (`kiro-cli`), and a local Qwen 3.8 27B (LM Studio Splash) with speculative decoding.
+An optimized, production-ready environment setup for macOS (Apple Silicon MacBook Pro M5 Pro 64GB) combining Claude Code, Google Antigravity CLI (`agy`), Kiro CLI (`kiro-cli`), and fast local coding LLMs (**Ornith-1.5-35B-A3B**, **Inkling-2-Mini**, **DaisyRose-27B** on **oMLX v0.8.1**, plus **Qwen 3.8 27B Splash** on LM Studio) with speculative decoding.
 
-The local models are integrated into **Claude Code only**, and are strictly opt-in — a plain `claude` session has no access to them whatsoever. See [LOCAL_LLM_HARNESS.md](LOCAL_LLM_HARNESS.md).
+The local models are integrated into **Claude Code only**, and are strictly opt-in — a plain `claude` session has no access to them whatsoever. See [LOCAL_LLM_HARNESS.md](LOCAL_LLM_HARNESS.md) and the Nov 2026 9-arm benchmark report in **[WALKTHROUGH_2026_11.md](WALKTHROUGH_2026_11.md)**.
 
 ---
 
@@ -74,18 +74,18 @@ source ~/.zshrc
 runs `claude --dangerously-skip-permissions` on your Pro subscription.
 
 ```bash
-claude                                       # Pro subscription
-claude open_router [ox_alpha|<model_id>]     # OpenRouter (default stealth/ox-alpha)
-claude local qwen38_27 [--think xhigh|medium|low]
-                                             # local Qwen 3.8 27B Splash 4-bit (default --think xhigh)
-claude local [--think xhigh|medium|low]      # whichever local model is already resident
-claude subagent                              # Pro + the opt-in local-qwen delegation subagent
+claude                                           # Pro subscription
+claude open_router [ox_alpha|<model_id>]         # OpenRouter (default stealth/ox-alpha)
+claude local ornith [--think xhigh|medium|low]   # Ornith-1.5-35B-A3B oQ4e-mtp on oMLX (default local)
+claude local inkling2 [--think xhigh|...|none]   # Thinking Machines Inkling-2-Mini oQ3e-mtp on oMLX + DSpark
+claude local daisyrose [--think xhigh|med|low]   # DaisyRose-27B pure-RL oQ4e-mtp on oMLX
+claude local qwen38_27 [--think xhigh|med|low]   # Qwen 3.8 27B Splash 4-bit on LM Studio
+claude local [--think ...]                       # resident local model (or starts ornith35)
+claude subagent                                  # Pro + the opt-in local-qwen delegation subagent
 ```
 
-It runs on LM Studio's Splash engine (errors if LM Studio isn't installed).
-`--think` also accepts `high`/`max` (= xhigh),
-`med`, and `minimal` (= low). Every branch forwards `"$@"`, so
-`claude -p "..."` and `claude local qwen38_27 --resume` work.
+`qwen38_27` uses LM Studio's Splash engine; `ornith`, `inkling2`, and `daisyrose` use `oMLX v0.8.1` (`--think xhigh` default everywhere).
+`--think` accepts aliases (`high`/`max` = xhigh, `med` = medium, `minimal` = low; Inkling 2 Mini also accepts `none`/`minimal`/`high`). Every branch forwards `"$@"`, so `claude -p "..."` and `claude local ornith --resume` work.
 
 `agy` is a plain alias: `alias agy="agy --dangerously-skip-permissions"`.
 
@@ -103,20 +103,20 @@ alias claude_resume_logs="claude-resume logs"
 
 ### 3.4 Local LLM commands
 ```bash
-llm-serve start [splash4]   # the only model
+llm-serve start [ornith35|inkling2|daisyrose27|splash4]
 llm-serve stop | status | which | logs [server|proxy]
 llm-serve restart [model]   # full restart (reloads weights)
 llm-serve restart-proxy     # reload just the proxy, model stays resident
 lmstudio-setup              # LM Studio app: search/files/memory tools + preset (§5.2)
 
 qwen "explain this regex"   # one-shot prompt against the resident model
-qwen-cli [splash4]          # interactive terminal chat (lms chat)
+qwen-cli [model]            # interactive terminal chat (REPL for oMLX, lms chat for splash4)
 
 # aliases
 llm_start / llm_stop / llm_status / llm_logs
-llm_use_splash              # llm-serve start splash4
-claude_local_splash         # qwen-code --model splash4
-qwen_splash_chat            # qwen-cli splash4
+llm_use_ornith / llm_use_inkling2 / llm_use_daisyrose / llm_use_splash
+claude_local_ornith / claude_local_inkling2 / claude_local_daisyrose / claude_local_splash
+qwen_ornith_chat / qwen_inkling_chat / qwen_daisy_chat / qwen_splash_chat
 ```
 
 **Local models never leak into real work:**
@@ -165,11 +165,18 @@ The auto-resume daemon runs silently in the background via `launchd` (`com.user.
 
 ---
 
-## 5. Local LLM Setup (Qwen 3.8 27B)
+## 5. Local LLM Setup (`oMLX` + LM Studio Splash)
 
-One model, one engine: `splash4`, Qwen 3.8 27B 4-bit with its DFlash2 drafter on LM
-Studio's Splash engine. Thinking defaults to `xhigh` everywhere (`LLM_EFFORT`,
-`--think`); `--think medium|low` trades depth for latency.
+Four verified local models are configured (see **[WALKTHROUGH_2026_11.md](WALKTHROUGH_2026_11.md)** for complete 9-arm benchmarks on M5 Pro 64 GB):
+
+| CLI Flag (`claude local ...`) | `llm-serve` alias | Model & Engine | Warm Ping | Decode (2K / T2) | Coding Eval (`xhigh`) |
+|---|---|---|---:|---:|---|
+| `ornith` (default) | `ornith35` | `Ornith-1.5-35B-A3B-oQ4e-mtp` (`oMLX` + MTP) | **0.61 s** | **103.6 / 86.9 t/s** | **5/5 + T6 PASS** (11.6m) |
+| `inkling2` | `inkling2` | `Inkling-2-Mini-oQ3e-mtp` (`oMLX` + DSpark, `TF32=0`) | 3.98 s | 65.8 / 30.2 t/s | **5/5 + T6 PASS** (65.9m) |
+| `daisyrose` | `daisyrose27` | `DaisyRose-27B-oQ4e-mtp` (pure-RL Qwen 3.8, `oMLX` + MTP) | 1.76 s | 45.2 / 31.3 t/s | **5/5 + T6 PASS** (41.4m) |
+| `qwen38_27` | `splash4` | `incoai/Qwen3.8-27B-Splash` (LM Studio Splash 1.3.0 + DFlash2) | 1.01 s | 73.7 / 44.3 t/s | 4/5 + T6 PASS (58.8m) |
+
+Thinking defaults to `xhigh` everywhere (`LLM_EFFORT`, `--think`); `--think medium|low` (and `minimal|none` on Inkling 2) trades depth for latency.
 
 The local models are wired into **Claude Code only**. agy cannot reach a local model
 (it ignores `mcpServers` and takes no custom endpoint), and Kiro's MCP integration was
@@ -177,9 +184,9 @@ removed to keep the experiment confined to one harness. Full integration guide:
 **[LOCAL_LLM_HARNESS.md](LOCAL_LLM_HARNESS.md)**.
 
 ```bash
-llm-serve start splash4            # load the model + the Anthropic-translation proxy
+llm-serve start ornith35           # load Ornith-1.5-35B-A3B + Anthropic proxy (or start inkling2/daisyrose27/splash4)
 qwen "explain this regex"          # one-shot, from your shell or a Bash call
-claude local qwen38_27             # Claude Code running 100% on local weights
+claude local ornith                # Claude Code running 100% on local weights
 ```
 
 `WebSearch` works on the local stack too: the proxy runs it itself (keyless

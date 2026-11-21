@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * qwen — one-shot prompt against the local model server (LM Studio Splash).
+ * qwen — one-shot prompt against the active local model server (:8089).
  *
  * The universal integration point: every harness has a shell tool, so this works
  * identically from Claude Code (Bash), Antigravity (run_command), and Kiro
@@ -17,17 +17,32 @@
  *   -s, --system TEXT   system prompt
  *   -t, --think         enable extended reasoning (default off — it costs
  *                       roughly 10-20x the tokens, so only for hard analysis)
- *   -e, --effort LEVEL  reasoning effort when thinking: xhigh|medium|low
- *                       (default xhigh, or $LLM_EFFORT; high/max = xhigh)
+ *   -e, --effort LEVEL  reasoning effort when thinking (default xhigh, or $LLM_EFFORT)
  *   -m, --max-tokens N  cap generated tokens (default 4096)
- *       --temp N        sampling temperature (default 1.0, Qwen 3.8's recommendation)
+ *       --temp N        sampling temperature (default 1.0)
  *       --raw           print without the trailing newline fixups
  */
 
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+
+const STATE_DIR = join(homedir(), ".local", "state", "local-llm");
+const readState = (name, fallback) => {
+  try {
+    const p = join(STATE_DIR, name);
+    if (existsSync(p)) {
+      const v = readFileSync(p, "utf8").trim();
+      if (v) return v;
+    }
+  } catch {}
+  return fallback;
+};
 
 const UPSTREAM = (process.env.UPSTREAM || "http://127.0.0.1:8089/v1").replace(/\/$/, "");
-const MODEL = process.env.MODEL || "qwen-local";
+const MODEL = process.env.MODEL || readState("upstream_model", "qwen-local");
+const FAMILY = (process.env.MODEL_FAMILY || readState("family", "qwen3.8")).toLowerCase();
+const DEFAULT_TOP_P = Number(readState("top_p", FAMILY === "inkling2" ? "1.0" : "0.95"));
 
 function usage(code = 0) {
   const src = readFileSync(new URL(import.meta.url), "utf8");
@@ -70,11 +85,12 @@ async function readStdin() {
   return Buffer.concat(chunks).toString("utf8");
 }
 
-// Map onto Qwen 3.8's three template levels; common spellings are accepted.
-const EFFORT_ALIASES = { xhigh: "xhigh", high: "xhigh", max: "xhigh", medium: "medium", med: "medium", low: "low", minimal: "low" };
+const EFFORT_ALIASES = FAMILY === "inkling2"
+  ? { none: "none", off: "none", "0": "none", minimal: "minimal", min: "minimal", low: "low", medium: "medium", med: "medium", default: "medium", high: "high", xhigh: "xhigh", max: "xhigh", "x-high": "xhigh" }
+  : { xhigh: "xhigh", high: "xhigh", max: "xhigh", "x-high": "xhigh", medium: "medium", med: "medium", default: "medium", low: "low", minimal: "low", min: "low" };
 opts.effort = EFFORT_ALIASES[String(opts.effort).toLowerCase()];
 if (!opts.effort) {
-  console.error("qwen: --effort must be xhigh, medium or low");
+  console.error(FAMILY === "inkling2" ? "qwen: --effort must be none|minimal|low|medium|high|xhigh" : "qwen: --effort must be xhigh, medium or low");
   process.exit(2);
 }
 
@@ -107,11 +123,15 @@ const body = {
   messages,
   max_tokens: opts.maxTokens,
   temperature: opts.temp,
-  top_p: 0.95,
+  top_p: DEFAULT_TOP_P,
   stream: true,
 };
-if (!opts.think) body.chat_template_kwargs = { enable_thinking: false };
-else body.reasoning_effort = opts.effort;
+if (!opts.think) {
+  if (FAMILY === "inkling2") body.reasoning_effort = "none";
+  else body.chat_template_kwargs = { enable_thinking: false };
+} else {
+  body.reasoning_effort = opts.effort;
+}
 
 let res;
 try {

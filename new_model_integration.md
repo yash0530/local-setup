@@ -115,11 +115,14 @@ reasoning delivers thin answers at real latency cost.
   ~2–5 s.
 - Commit; engines stopped; one `llm-serve start <alias>` from working.
 
-## Current reference numbers (2026-09, for calibration)
+## Current reference numbers (for calibration)
 
-| Config | Warm follow-up | Decode | Deepest verified recall |
-|---|---|---|---|
-| splash4 (LM Studio Splash, DFlash2) | **1–2 s** (97–99% cached) | 35–84 t/s | **227,078** tokens (stopped at 44.8 GB wired) |
-| gguf5 (llama.cpp, MTP n=2; removed 2026-10-01) | ~8 s | ~13–20 t/s | 158,766 tokens |
+| Config | Warm follow-up | Decode (2K / T2) | Deepest verified recall | Tier 4 Coding (`xhigh`) |
+|---|---|---|---|---|
+| **ornith35** (`oMLX 0.8.1`, MTP, TF32=1, Nov 2026) | **0.61 s** (`91–99%` cached) | **103.6 / 86.9 t/s** | **8/8 files** (`30.85 GB` wired, `472s`) | **5/5 + T6 PASS** (`697 s`, `0` timeouts) |
+| **inkling2** (`oQ3e-mtp`, `oMLX 0.8.1`, DSpark, `TF32=0`, Nov 2026) | `3.98 s` (`87–99%` cached) | `65.8 / 30.2 t/s` | **8/8 files** (`40.5 GB` wired, `file1` `3/3`) | **5/5 + T6 PASS** (`3,953 s`) |
+| **daisyrose27** (`oQ4e-mtp`, `oMLX 0.8.1`, MTP, Nov 2026) | `1.76 s` (`93–99%` cached) | `45.2 / 31.3 t/s` | `5/6 files` (`36.8 GB` wired, T6 timeout) | **5/5 + T6 PASS** (`2,481 s`, `0` timeouts) |
+| **splash4** (`LM Studio Splash 1.3.0`, DFlash2) | **1.01 s** (`91–99%` cached) | `73.7 / 44.3 t/s` | **227,078** tok (`44.8 GB`, Sep 2026) / `5/6` (`xhigh`, Nov 2026) | `4/5 + T6 PASS` (`3,527 s`) |
+| gguf5 (llama.cpp, MTP n=2; removed 2026-10-01) | ~8 s | ~13–20 t/s | 158,766 tokens | — |
 
-A new model should beat the relevant row or it isn't worth switching.
+A new model should beat or clearly complement these rows before replacing them. Remember from Nov 2026 findings: keep `hot_cache_max_size` <= `2GB` on oMLX for high-KV-footprint models (like Inkling 2's 48-visit unbounded cache) and `turboquant_kv_enabled: false`; always check `MLX_ENABLE_TF32=0` parity on M5 before adopting native NVFP4/MXFP8 checkpoints.

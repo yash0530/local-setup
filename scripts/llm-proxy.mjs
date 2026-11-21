@@ -85,8 +85,12 @@ const UA =
 // Dump each translated request; diffing two consecutive payloads is how you find
 // what broke the prefix cache.
 const DUMP_DIR = process.env.DUMP_DIR || "";
-// "" leaves the model's own default. "low" | "medium" | "xhigh" for Qwen 3.8.
+// "" leaves the model's own default. "low" | "medium" | "xhigh" for Qwen 3.8;
+// "none" | "minimal" | "low" | "medium" | "high" | "xhigh" for Inkling 2.
 const REASONING_EFFORT = process.env.REASONING_EFFORT || "";
+const MODEL_FAMILY = (process.env.MODEL_FAMILY || "qwen3.8").toLowerCase();
+const DEFAULT_TEMP = process.env.DEFAULT_TEMP !== undefined && process.env.DEFAULT_TEMP !== "" ? Number(process.env.DEFAULT_TEMP) : null;
+const DEFAULT_TOP_P = process.env.DEFAULT_TOP_P !== undefined && process.env.DEFAULT_TOP_P !== "" ? Number(process.env.DEFAULT_TOP_P) : null;
 if (DUMP_DIR) fs.mkdirSync(DUMP_DIR, { recursive: true });
 
 const log = (...a) => console.error("[llm-proxy]", ...a);
@@ -500,19 +504,38 @@ function toOpenAIRequest(body) {
   if (REASONING_EFFORT) req.reasoning_effort = REASONING_EFFORT;
   if (typeof body.reasoning_effort === "string") req.reasoning_effort = body.reasoning_effort;
   if (typeof body.temperature === "number") req.temperature = body.temperature;
+  else if (DEFAULT_TEMP !== null && Number.isFinite(DEFAULT_TEMP)) req.temperature = DEFAULT_TEMP;
   if (typeof body.top_p === "number") req.top_p = body.top_p;
+  else if (DEFAULT_TOP_P !== null && Number.isFinite(DEFAULT_TOP_P)) req.top_p = DEFAULT_TOP_P;
   if (Array.isArray(body.stop_sequences) && body.stop_sequences.length) req.stop = body.stop_sequences;
 
   const tools = convertTools(body.tools, proxyTools);
+  const toolNames = new Set();
+  const toolNameMap = new Map();
   if (tools) {
+    for (const t of tools) {
+      const n = t.function?.name;
+      if (!n) continue;
+      toolNames.add(n);
+      const k = n.trim().toLowerCase();
+      if (!toolNameMap.has(k)) toolNameMap.set(k, n);
+    }
     req.tools = tools;
     const choice = convertToolChoice(body.tool_choice);
     if (choice) req.tool_choice = choice;
   }
   if (req.stream) req.stream_options = { include_usage: true };
-  // Suppress the model's reasoning phase unless explicitly opted in.
-  if (!THINK) req.chat_template_kwargs = { enable_thinking: false };
-  return { req, proxyTools };
+  // Suppress the model's reasoning phase when requested; Inkling 2 uses reasoning_effort="none".
+  if (!THINK) {
+    if (MODEL_FAMILY === "inkling2") req.reasoning_effort = "none";
+    else req.chat_template_kwargs = { enable_thinking: false };
+  }
+  return { req, proxyTools, toolNames, toolNameMap };
+}
+
+function canonicalToolName(raw, toolNames, toolNameMap) {
+  if (!raw || !toolNames || toolNames.has(raw)) return raw;
+  return toolNameMap?.get(raw.trim().toLowerCase()) || raw;
 }
 
 /* ------------------------------------------------------------------ */
@@ -592,13 +615,14 @@ const STOP_REASON = {
 /* OpenAI response -> Anthropic response                                */
 /* ------------------------------------------------------------------ */
 
-function toAnthropicResponse(oai, requestedModel) {
+function toAnthropicResponse(oai, requestedModel, toolNames, toolNameMap) {
   const choice = oai.choices?.[0] || {};
   const msg = choice.message || {};
   const content = [];
 
-  if (EMIT_THINKING && msg.reasoning_content) {
-    content.push({ type: "text", text: `<thinking>\n${msg.reasoning_content}\n</thinking>` });
+  const msgReasoning = msg.reasoning_content || msg.reasoning;
+  if (EMIT_THINKING && msgReasoning) {
+    content.push({ type: "text", text: `<thinking>\n${msgReasoning}\n</thinking>` });
   }
   if (msg.content) content.push({ type: "text", text: msg.content });
 
@@ -609,7 +633,8 @@ function toAnthropicResponse(oai, requestedModel) {
     } catch {
       input = { _raw: tc.function?.arguments || "" };
     }
-    content.push({ type: "tool_use", id: tc.id || `toolu_${randomUUID()}`, name: tc.function?.name, input });
+    const name = canonicalToolName(tc.function?.name, toolNames, toolNameMap);
+    content.push({ type: "tool_use", id: tc.id || `toolu_${randomUUID()}`, name, input });
   }
   if (!content.length) content.push({ type: "text", text: "" });
 
@@ -651,7 +676,7 @@ function sse(res, event, data) {
  * against the real API. Tool calls are therefore buffered until a round ends:
  * only then do we know whether they are ours to run or the harness's to run.
  */
-async function streamAnthropic(oaiReq, proxyTools, res, requestedModel) {
+async function streamAnthropic(oaiReq, proxyTools, res, requestedModel, toolNames, toolNameMap) {
   const msgId = `msg_${randomUUID()}`;
   res.writeHead(200, {
     "Content-Type": "text/event-stream",
@@ -783,6 +808,11 @@ async function streamAnthropic(oaiReq, proxyTools, res, requestedModel) {
     let finish = null;
     let hopIn = 0;
     let hopOut = 0;
+    let hopCached = 0;
+    let hopUsage = null;
+    let hopTimings = null;
+    const hopStart = Date.now();
+    let hopFirstTok = null;
 
     const decoder = new TextDecoder();
     let buf = "";
@@ -806,16 +836,23 @@ async function streamAnthropic(oaiReq, proxyTools, res, requestedModel) {
         }
 
         if (evt.usage) {
+          hopUsage = evt.usage;
           hopIn = evt.usage.prompt_tokens ?? hopIn;
           hopOut = evt.usage.completion_tokens ?? hopOut;
+          hopCached = evt.usage.prompt_tokens_details?.cached_tokens ?? evt.usage.cached_tokens ?? hopCached;
         }
+        if (evt.timings) hopTimings = evt.timings;
 
         const choice = evt.choices?.[0];
         if (!choice) continue;
         const delta = choice.delta || {};
+        const deltaReasoning = delta.reasoning_content || delta.reasoning;
+        if (hopFirstTok === null && (deltaReasoning || delta.content || (delta.tool_calls && delta.tool_calls.length))) {
+          hopFirstTok = Date.now();
+        }
 
-        // Reasoning arrives in its own field (--reasoning-format deepseek).
-        if (THINK_VIEW !== "off" && delta.reasoning_content) {
+        // Reasoning arrives in its own field (reasoning_content / reasoning).
+        if (THINK_VIEW !== "off" && deltaReasoning) {
           if (!thinkingOpen) {
             if (THINK_VIEW === "native") {
               openBlock({ type: "thinking", thinking: "" });
@@ -848,13 +885,13 @@ async function streamAnthropic(oaiReq, proxyTools, res, requestedModel) {
             emit("content_block_delta", {
               type: "content_block_delta",
               index: blockIndex,
-              delta: { type: "thinking_delta", thinking: delta.reasoning_content },
+              delta: { type: "thinking_delta", thinking: deltaReasoning },
             });
           } else if (THINK_VIEW === "text") {
             emit("content_block_delta", {
               type: "content_block_delta",
               index: blockIndex,
-              delta: { type: "text_delta", text: delta.reasoning_content },
+              delta: { type: "text_delta", text: deltaReasoning },
             });
           } else if (Date.now() - thinkLastTick >= THINK_TICK_MS) {
             // status: a periodic tick, not the reasoning itself. Deltas append,
@@ -906,7 +943,29 @@ async function streamAnthropic(oaiReq, proxyTools, res, requestedModel) {
     inputTokens = hopIn || inputTokens;
     outputTokens += hopOut;
 
-    const calls = [...pending.values()];
+    const hopWallS = (Date.now() - hopStart) / 1000;
+    const hopTtftS = hopUsage?.time_to_first_token ?? ((hopFirstTok !== null ? hopFirstTok - hopStart : Date.now() - hopStart) / 1000);
+    const hopGenS = Math.max(0.001, hopWallS - hopTtftS);
+    const hopDecodeTps = hopTimings?.predicted_per_second ?? hopUsage?.generation_tokens_per_second ?? (hopOut > 1 ? +(hopOut / hopGenS).toFixed(1) : null);
+    const hopPrefillTps = hopTimings?.prompt_per_second ?? hopUsage?.prompt_tokens_per_second ?? (hopIn > 0 && hopTtftS > 0.005 ? +((Math.max(1, hopIn - hopCached)) / hopTtftS).toFixed(1) : null);
+    log("METRICS", JSON.stringify({
+      model: MODEL,
+      family: MODEL_FAMILY,
+      prompt_tokens: hopIn,
+      cached_tokens: hopCached,
+      completion_tokens: hopOut,
+      reasoning_tokens: hopUsage?.completion_tokens_details?.reasoning_tokens ?? null,
+      ttft_s: +hopTtftS.toFixed(3),
+      wall_s: +hopWallS.toFixed(3),
+      prefill_tps: hopPrefillTps,
+      decode_tps: hopDecodeTps,
+      finish: finish || "stop",
+    }));
+
+    const calls = [...pending.values()].map((c) => ({
+      ...c,
+      name: canonicalToolName(c.name, toolNames, toolNameMap),
+    }));
     const ours = calls.filter((c) => proxyTools.has(c.name) && PROXY_TOOLS[c.name]);
     const theirs = calls.filter((c) => !(proxyTools.has(c.name) && PROXY_TOOLS[c.name]));
 
@@ -973,7 +1032,7 @@ async function streamAnthropic(oaiReq, proxyTools, res, requestedModel) {
 }
 
 /** Same hop loop as the streaming path, for non-streaming requests. */
-async function blockingAnthropic(oaiReq, proxyTools, requestedModel) {
+async function blockingAnthropic(oaiReq, proxyTools, requestedModel, toolNames, toolNameMap) {
   let inputTokens = 0;
   let outputTokens = 0;
   const ranHere = [];
@@ -993,7 +1052,7 @@ async function blockingAnthropic(oaiReq, proxyTools, requestedModel) {
     const msg = oai.choices?.[0]?.message || {};
     const calls = (msg.tool_calls || []).map((tc) => ({
       id: tc.id || `toolu_${randomUUID()}`,
-      name: tc.function?.name || "",
+      name: canonicalToolName(tc.function?.name || "", toolNames, toolNameMap),
       args: tc.function?.arguments || "",
     }));
     const ours = calls.filter((c) => proxyTools.has(c.name) && PROXY_TOOLS[c.name]);
@@ -1009,7 +1068,7 @@ async function blockingAnthropic(oaiReq, proxyTools, requestedModel) {
       for (const d of done) ranHere.push(`[${d.name} ${JSON.stringify(d.input)}]\n${d.result}`);
     }
 
-    const out = toAnthropicResponse(oai, requestedModel);
+    const out = toAnthropicResponse(oai, requestedModel, toolNames, toolNameMap);
     // Our own tool calls must never reach the harness — it has no such tools.
     out.content = out.content.filter(
       (b) => !(b.type === "tool_use" && proxyTools.has(b.name) && PROXY_TOOLS[b.name]),
@@ -1051,7 +1110,7 @@ const server = http.createServer(async (req, res) => {
 
   // `effort` lets qwen-code tell whether a running proxy already applies the requested
   // --think level, and restart only the proxy (never the model) when it doesn't.
-  if (path === "/health") return sendJSON(res, 200, { ok: true, upstream: UPSTREAM, model: MODEL, effort: REASONING_EFFORT });
+  if (path === "/health") return sendJSON(res, 200, { ok: true, upstream: UPSTREAM, model: MODEL, family: MODEL_FAMILY, effort: REASONING_EFFORT });
 
   // Claude Code pre-flights context budget here; an approximation is fine, it
   // only drives compaction timing.
@@ -1078,7 +1137,7 @@ const server = http.createServer(async (req, res) => {
     return anthropicError(res, 400, `bad JSON: ${e.message}`, "invalid_request_error");
   }
 
-  const { req: oaiReq, proxyTools } = toOpenAIRequest(body);
+  const { req: oaiReq, proxyTools, toolNames, toolNameMap } = toOpenAIRequest(body);
   debug(
     `${body.model} -> ${MODEL}  msgs=${oaiReq.messages.length} tools=${oaiReq.tools?.length ?? 0}` +
       ` proxy_tools=${[...proxyTools].join(",") || "none"} stream=${oaiReq.stream}`,
@@ -1097,9 +1156,9 @@ const server = http.createServer(async (req, res) => {
 
   try {
     if (oaiReq.stream) {
-      await streamAnthropic(oaiReq, proxyTools, res, body.model);
+      await streamAnthropic(oaiReq, proxyTools, res, body.model, toolNames, toolNameMap);
     } else {
-      sendJSON(res, 200, await blockingAnthropic(oaiReq, proxyTools, body.model));
+      sendJSON(res, 200, await blockingAnthropic(oaiReq, proxyTools, body.model, toolNames, toolNameMap));
     }
   } catch (e) {
     if (e.status) log("upstream error", e.status, e.message);

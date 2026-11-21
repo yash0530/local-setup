@@ -1,8 +1,6 @@
-# Wiring local Qwen 3.8 into Claude Code
+# Wiring local coding models into Claude Code
 
-How to use the locally-served Qwen 3.8 27B (LM Studio Splash, 4-bit) as a
-working agent inside Claude Code. Numbers below were measured on this box (M5 Pro,
-64 GB), not estimated.
+How to run local open-weight models (`Ornith-1.5-35B-A3B`, `Inkling-2-Mini`, `DaisyRose-27B` on `oMLX v0.8.1`, plus `Qwen 3.8 27B` on LM Studio Splash) inside Claude Code. Numbers below were measured on this box (M5 Pro, 64 GB, `iogpu.wired_limit_mb = 51200`), not estimated. See **[WALKTHROUGH_2026_11.md](WALKTHROUGH_2026_11.md)** for complete Nov 2026 Tier 1–4 benchmarks across 9 tested configurations.
 
 **Scope: Claude Code only.** Kiro and agy keep running on their own cloud models — see §5.3.
 
@@ -83,18 +81,22 @@ session or straight from your terminal.
 ## 2. Quick start
 
 ```bash
-llm-serve start splash4    # loads Qwen 3.8 27B on Splash + proxy (~15 s)
-llm-serve status           # what's resident, and is it healthy
+llm-serve start ornith35   # loads Ornith-1.5-35B-A3B on oMLX + Anthropic proxy (~6 s)
+llm-serve status           # what's resident, engine, context cap, and health
+llm-serve which            # active alias (ornith35 | inkling2 | daisyrose27 | splash4)
 
 qwen "explain this regex: ^\d{3}-\d{4}$"
 git diff | qwen "write a conventional-commit message"
-qwen-cli splash4           # interactive terminal chat
+qwen-cli                   # interactive terminal chat
 
-claude local qwen38_27                       # Claude Code, 100% local (Splash)
-claude local qwen38_27 --think medium        # less reasoning, lower latency
-claude local                                 # whatever is already resident
+claude local ornith                          # Claude Code on Ornith-1.5-35B-A3B (default local)
+claude local inkling2                        # Claude Code on Inkling-2-Mini oQ3e-mtp (TF32=0)
+claude local daisyrose                       # Claude Code on DaisyRose-27B (pure-RL Qwen 3.8)
+claude local qwen38_27                       # Claude Code on Qwen 3.8 27B (LM Studio Splash)
+claude local ornith --think medium           # less reasoning, lower latency
+claude local                                 # whatever is already resident (or starts ornith35)
 
-llm-serve stop             # frees the model
+llm-serve stop             # frees the model and proxy
 ```
 
 Plain `claude` still uses your Pro subscription. No Anthropic env vars are exported
@@ -103,33 +105,19 @@ ever leaks).
 
 ---
 
-## 3. Which model
+## 3. Which models & engines
 
-**Qwen 3.8 27B Splash only** (`splash4`: 4-bit + DFlash2 drafter on LM Studio's Splash
-engine). `claude local qwen38_27 [--think xhigh|medium|low]` (default `--think xhigh`);
-errors if LM Studio isn't installed. The proxy is model-agnostic, so a future model
-slots in behind it unchanged.
+Four models across two engines (single-server rule on port `8089`, all defaulting to `--think xhigh`):
 
-**Splash** (measured 2026-09-27, LM Studio 0.4.25, Splash runtime 0.0.5, real Claude
-Code sessions):
+- **`ornith35` (`claude local ornith`, default):** `scottlowry/Ornith-1.5-35B-A3B-oQ4e-mtp` (35B-A3B MoE + MTP on `oMLX v0.8.1`, `ctx 262144`). Measured on M5 Pro 64 GB: **103.6 t/s** short decode (`86.9 t/s` mean in 12-turn Claude Code, `140 t/s` tool calls), **2,646 t/s** 16K cold prefill (`5.9 s` first turn, **0.61 s** warm follow-ups), `5/5` + Task 6 PASS (`697 s`, 0 timeouts), and **8/8** `stress-corpus` recall at `30.85 GB` wired.
+- **`inkling2` (`claude local inkling2`):** `mlx-community/Inkling-2-Mini-oQ3e-mtp` (`thinkingmachines/Inkling-2-Mini` looped MoE + DSpark on `oMLX v0.8.1`, `MLX_ENABLE_TF32=0`, `ctx 131072`). `oMLX` runs with `--hot-cache-max-size 2GB`, `mtp_enabled: true`, `turboquant_kv_enabled: false`. Measured: `65.8 t/s` (`83.3 t/s` tools), `3.98 s` warm ping, `12/12` Tier 2 turns (`<=39.2 GB` wired), **8/8** depth recall (`<=40.5 GB` wired), **5/5 + Task 6 PASS** in Tier 4 (`3,953 s`). Accepts `--think none|minimal|low|medium|high|xhigh`.
+- **`daisyrose27` (`claude local daisyrose`):** `krisfremen/DaisyRose-27B-oQ4e-mtp` (pure-RL Qwen 3.8 27B + MTP on `oMLX v0.8.1`, `ctx 131072`). Measured: `45.2 t/s` (`1.76 s` warm ping), `12/12` Tier 2 (`<=36.6 GB` wired), **5/5 + Task 6 PASS** with 0 timeouts (`2,481 s`).
+- **`splash4` (`claude local qwen38_27`):** `incoai/Qwen3.8-27B-Splash` (4-bit + DFlash2 drafter on LM Studio Splash 1.3.0, `ctx 262144`). Measured: `73.7 t/s` 2K / `44.3 t/s` Tier 2 mean, **1.01 s** warm ping, `4/5 + Task 6 PASS` at `xhigh`. Kept via virtual model `dotfiles/lmstudio/qwen3.8-27b-splash/model.yaml`.
 
-- Warm follow-ups **1–2 s**; 97–99% of every prompt cached after the first request
-  (LM Studio log `Done · input N · cached M`), TTFT 0.4–0.9 s.
-- Decode 35–84 t/s; cold 16k-token prefill ~33 s (~480 tok/s).
-- Correct recall at **227,078 tokens** of context on the depth ladder (stopped before the 50 GB GPU-memory limit).
-- Loads 262,144 ctx in ~15 s. Wired memory grows with context: ~22 GB at 62k, ~38 GB at
-  199k, 44.8 GB at 227k (the GPU wired limit is 50 GB), so ~230k is the practical ceiling.
-- `llm-serve` starts it with `lms server start --port 8089` + `lms load … --identifier
-  qwen-local`, so the proxy and `qwen` talk to it unchanged.
-- The downloaded model declares no reasoning capability, so LM Studio would drop
-  `reasoning_effort`. `llm-serve` installs a virtual model
-  (`dotfiles/lmstudio/qwen3.8-27b-splash/model.yaml` → `local/qwen3.8-27b-splash`)
-  that maps it onto the template variable, so `--think` works on Splash too.
-
-**Reasoning effort.** Qwen 3.8's template has exactly three levels: `xhigh` prepends a
-"think carefully" instruction, `low` a "keep it brief" one, `medium` nothing. Default
-is `xhigh` (`LLM_EFFORT`). `qwen-code` normalises `high`/`max`/`med`/`minimal` and
-restarts only the proxy when a running stack is at another level.
+**Engine notes (`oMLX` + proxy):**
+- `oMLX v0.8.1` runs headlessly via `/Applications/oMLX.app/Contents/MacOS/omlx-cli serve` using an isolated runtime base (`~/.local/state/local-llm/omlx-base`) and preloads each model via `/v1/models/<id>/load`.
+- **Reasoning effort & families:** `llm-serve` persists `family`, `upstream_model`, `ctx`, `temp`, `top_p` in `~/.local/state/local-llm/` so `llm-proxy.mjs` and `qwen` adapt automatically (`chat_template_kwargs: {enable_thinking: false}` for Qwen 3.8/Ornith/DaisyRose vs `reasoning_effort: "none"` for Inkling 2 when thinking is off).
+- **Case-insensitive tool canonicalization:** `llm-proxy.mjs` canonicalizes returned `tool_calls` names case-insensitively against the caller's requested `tools` array (fixing models that lowercase e.g. `bash` instead of `Bash`).
 
 ---
 
@@ -313,15 +301,16 @@ to detect.
 | `cannot reach the model server` | `llm-serve start` |
 | `dyld: Library not loaded: ... libllhttp.X.dylib` / proxy abort | Node shared library mismatch (common after `brew upgrade` touches dependencies like `llhttp`). Fix: `brew upgrade node` (or `brew reinstall node`). |
 | `claude local qwen38_27` says Splash is not installed | Install LM Studio and the Splash runtime + model (README §5.1). |
+| `oMLX CLI not found` | Install `oMLX.app` (v0.8.1 DMG with Metal kernels) to `/Applications/oMLX.app`. |
 | `model not downloaded: incoai/Qwen3.8-27B-Splash` | `lms get https://huggingface.co/incoai/Qwen3.8-27B-Splash` — the bare name hits LM Studio Hub. |
 | Plain `claude` starts using the local model | Something exported `ANTHROPIC_BASE_URL` globally. Check `env \| grep ANTHROPIC`. |
 | Second request hangs | Look for a stray headless client holding the model: `ps -eo pid,etime,command \| grep "claude -p"`. |
-| Empty turns deep into a session | Silent OOM near the GPU wired limit (~230k context). Start a fresh session; `llm-serve logs` for errors. |
+| Empty turns deep into a session | Silent OOM near the GPU wired limit. Start a fresh session; `llm-serve logs` for errors. |
 | Starting seems to hang | It's reading the weights from disk. `llm-serve logs` to watch. |
 | `Did 0 searches` from WebSearch | The harness ran its own WebSearch. `llm-serve logs proxy`: a `WebSearch {"query":...}` line means the proxy ran it; a line plus `ERROR:` means the backend failed — switch `SEARCH_BACKEND`. |
 | `status` says stopped but something serves :8089 | An interrupted `start` left a listener without a pidfile. `llm-serve` adopts listeners on both ports on every command. |
 | `Unable to connect to API (ConnectionRefused)` mid-session | The proxy died. Daemons run in their own session (`detach()`); check `ps -o pid,pgid -p $(cat ~/.local/state/local-llm/proxy.pid)` (pid should equal pgid). `llm-serve restart-proxy` brings it back without touching the model. |
-| First turn of every session re-prefills ~20k tokens | Expected. The harness appends a static catalog after your prompt, and the hybrid model can't restore a partial prefix. Turn 2 onwards is warm; keep sessions open. |
+| First turn of every session re-prefills ~20k tokens | Expected. The harness appends a static catalog after your prompt, and the hybrid/KV layout rebuilds once cleanly. Turn 2 onwards is warm; keep sessions open. |
 | `Stream idle timeout - no chunks received` on a big resume | The chunk watchdog (§6). `qwen-code` already sets 1800000; beyond that, the prefill is simply too long — keep sessions warm instead of resuming cold. |
 | `--think low` seems ignored on Splash | The LM Studio virtual model is missing or stale. `llm-serve restart splash4` reinstalls it. (`qwen-cli splash4` via `lms chat` always uses the model default.) |
 
@@ -331,18 +320,19 @@ to detect.
 
 | Path | What |
 |---|---|
-| `~/.local/bin/llm-serve` | start/stop/status for the whole stack |
-| `~/.local/bin/llm-proxy.mjs` | Anthropic ⇄ OpenAI shim (port 8790) |
+| `~/.local/bin/llm-serve` | start/stop/status for `oMLX` (`ornith35`, `inkling2`, `daisyrose27`) and `Splash` (`splash4`) |
+| `~/.local/bin/llm-proxy.mjs` | Anthropic ⇄ OpenAI shim (port 8790, family/tool canonicalization) |
 | `~/.local/bin/qwen` | one-shot CLI |
-| `~/.local/bin/qwen-cli` | interactive terminal chat |
+| `~/.local/bin/qwen-cli` | interactive terminal chat (REPL for oMLX, `lms chat` for Splash) |
 | `~/.local/bin/qwen-code` | Claude Code pinned to the local model |
 | `~/.local/bin/claude-local-subagent` | Claude Code + the opt-in local subagent |
 | `~/.claude/local-plugins/local-llm/` | the opt-in plugin. **Not** read by a plain `claude` |
+| `~/Models/{ornith-35b-a3b-oq4e-mtp,inkling2-mini-oq3e-mtp,daisyrose-27b-oq4e-mtp}` | pinned local oMLX weights (`llm-serve start` links active one cleanly) |
 | `~/.lmstudio/hub/models/local/qwen3.8-27b-splash/` | Splash virtual model (reasoning effort, sampling, context defaults), installed by `llm-serve start splash4` and `lmstudio-setup` |
 | `~/.local/bin/lmstudio-setup` | LM Studio app tools: plugins, `~/.lmstudio/mcp.json`, Local Assistant preset, auto-approve (README §5.2) |
 | `~/LMStudioFiles/` | the only folder the LM Studio filesystem MCP can touch |
 | `~/.local/share/lmstudio-mcp/memory.jsonl` | the LM Studio memory MCP's store |
-| `~/.local/state/local-llm/` | pidfiles, `current`, logs |
+| `~/.local/state/local-llm/` | pidfiles, `current`, `engine`, `family`, `ctx`, `omlx-base/`, logs |
 
 The `~/.local/bin` entries are symlinks into this repo. Reproducible on a new machine
 with `./setup.sh`.

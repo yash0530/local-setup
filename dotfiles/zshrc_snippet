@@ -6,15 +6,16 @@ alias agy="agy --dangerously-skip-permissions"
 
 # Claude dispatcher. A function, not an alias, because it takes subcommands.
 # `command claude` bypasses it, so it does not recurse.
-#   claude                                    Pro subscription (default)
-#   claude open_router [ox_alpha|<model>]     OpenRouter (defaults to stealth/ox-alpha)
-#   claude local qwen38_27 [--think xhigh|medium|low]
-#                                             Qwen 3.8 27B Splash 4-bit on LM Studio
-#                                             (default think xhigh)
-#   claude local [--think xhigh|medium|low]   whatever model is already resident
-#   claude subagent                           Pro + the opt-in local delegation subagent
+#   claude                                           Pro subscription (default)
+#   claude open_router [ox_alpha|<model>]            OpenRouter (defaults to stealth/ox-alpha)
+#   claude local ornith [--think xhigh|medium|low]   Ornith-1.5-35B-A3B oQ4e-mtp via oMLX (default local)
+#   claude local inkling2 [--think xhigh|...|none]   Inkling-2-Mini oQ3e-mtp via oMLX + DSpark
+#   claude local daisyrose [--think xhigh|med|low]   DaisyRose-27B oQ4e-mtp via oMLX
+#   claude local qwen38_27 [--think xhigh|med|low]   Qwen 3.8 27B Splash 4-bit via LM Studio
+#   claude local [--think ...]                       whatever is resident, or starts ornith35
+#   claude subagent                                  Pro + the opt-in local delegation subagent
 # Every branch forwards "$@", so flags survive: `claude -p "..."`,
-# `claude local qwen38_27 --resume`, and so on.
+# `claude local ornith --resume`, and so on.
 claude() {
   case "${1:-}" in
     open_router|openrouter)
@@ -36,35 +37,34 @@ claude() {
       ;;
     local)
       shift
-      case "${1:-}" in
-        qwen38_27|qwen38_27b)
-          # qwen-code normalises --think and restarts only the proxy if a running stack
-          # is at another level.
-          shift
-          local _think=xhigh
-          while true; do
-            case "${1:-}" in
-              --think)  _think="${2:-xhigh}"; shift 2 ;;
-              *) break ;;
-            esac
-          done
-          if ! command -v lms >/dev/null 2>&1 && [[ ! -x "$HOME/.lmstudio/bin/lms" ]]; then
-            echo "claude local qwen38_27: needs LM Studio's Splash engine, which is not installed (see README §5.1)" >&2
-            return 1
-          fi
-          qwen-code --model splash4 --think "$_think" "$@"
-          ;;
-        # Fail loudly on an unknown word: forwarding it would make it the session's
-        # first prompt.
-        --think)   qwen-code --think "${2:-xhigh}" "${@:3}" ;;
-        -*|"")     qwen-code --think xhigh "$@" ;;
-        *)
-          echo "claude local: unknown model '$1'" >&2
-          echo "  expected: qwen38_27 [--think xhigh|medium|low]" >&2
-          echo "  (if this name looks right, run: source ~/.zshrc)" >&2
+      local _model="" _think=xhigh
+      while true; do
+        case "${1:-}" in
+          --think) _think="${2:-xhigh}"; shift 2 ;;
+          ornith|ornith35|ornith_35b|ornith-35b)             _model="ornith35"; shift ;;
+          inkling2|inkling2_mini|inkling|inkling2-oq3e)      _model="inkling2"; shift ;;
+          daisyrose|daisyrose27|daisyrose_27b|daisyrose-27b) _model="daisyrose27"; shift ;;
+          qwen38_27|qwen38_27b|splash4)                      _model="splash4"; shift ;;
+          *) break ;;
+        esac
+      done
+      if [[ -n "$_model" ]]; then
+        if [[ "$_model" == "splash4" ]] && ! command -v lms >/dev/null 2>&1 && [[ ! -x "$HOME/.lmstudio/bin/lms" ]]; then
+          echo "claude local qwen38_27: needs LM Studio's Splash engine, which is not installed (see README §5.1)" >&2
           return 1
-          ;;
-      esac
+        fi
+        qwen-code --model "$_model" --think "$_think" "$@"
+      else
+        case "${1:-}" in
+          -*|"") qwen-code --think "$_think" "$@" ;;
+          *)
+            echo "claude local: unknown model '$1'" >&2
+            echo "  expected: ornith | inkling2 | daisyrose | qwen38_27 [--think xhigh|...]" >&2
+            echo "  (if this name looks right, run: source ~/.zshrc)" >&2
+            return 1
+            ;;
+        esac
+      fi
       ;;
     subagent) shift; claude-local-subagent "$@" ;;
     *)        command claude --dangerously-skip-permissions "$@" ;;
@@ -76,19 +76,28 @@ alias claude_resume="claude-resume"
 alias claude_resume_logs="claude-resume logs"
 
 # ------------------------------------------------------------------------------
-# Local LLM stack (Qwen 3.8 27B Splash 4-bit on LM Studio)
+# Local LLM stack (Ornith-1.5-35B-A3B / Inkling-2-Mini / DaisyRose-27B / Splash4)
 # ------------------------------------------------------------------------------
 # ANTHROPIC_BASE_URL is deliberately NOT exported here: it would route plain `claude`
 # to the local model. It is scoped inside qwen-code only.
 
-alias llm_start="llm-serve start"          # splash4
+alias llm_start="llm-serve start"          # ornith35 (default)
 alias llm_stop="llm-serve stop"
 alias llm_status="llm-serve status"
 alias llm_logs="llm-serve logs"
+alias llm_use_ornith="llm-serve start ornith35"
+alias llm_use_inkling2="llm-serve start inkling2"
+alias llm_use_daisyrose="llm-serve start daisyrose27"
 alias llm_use_splash="llm-serve start splash4"
 
+alias claude_local_ornith="qwen-code --model ornith35"
+alias claude_local_inkling2="qwen-code --model inkling2"
+alias claude_local_daisyrose="qwen-code --model daisyrose27"
 alias claude_local_splash="qwen-code --model splash4"
-# Terminal chat via LM Studio's CLI; the app's Chat tab is the UI equivalent.
+# Terminal chat aliases
+alias qwen_ornith_chat="qwen-cli ornith35"
+alias qwen_inkling_chat="qwen-cli inkling2"
+alias qwen_daisy_chat="qwen-cli daisyrose27"
 alias qwen_splash_chat="qwen-cli splash4"
 
 # Claude Code via OpenRouter (defaults to stealth/ox-alpha)

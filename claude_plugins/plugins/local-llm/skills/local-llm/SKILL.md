@@ -1,11 +1,11 @@
 ---
 name: local-llm
-description: "Reference for the local Qwen 3.8 27B model (LM Studio Splash, 4-bit) — how to start it and the three ways to reach them. OPT-IN ONLY: read this when the user explicitly asks about or for the local model ('ask qwen', 'use the local model', 'llm-serve', 'qwen-code'). This skill does NOT authorise routing work to local models on your own judgement — never do that."
+description: "Reference for the local coding models (Ornith-1.5-35B-A3B, Inkling-2-Mini oQ3e, DaisyRose-27B via oMLX; Qwen 3.8 27B Splash4 via LM Studio) — how to start them and the three ways to reach them. OPT-IN ONLY: read this when the user explicitly asks about or for the local model ('ask qwen', 'use the local model', 'llm-serve', 'qwen-code'). This skill does NOT authorise routing work to local models on your own judgement — never do that."
 ---
 
 # local-llm
 
-Qwen 3.8 27B can be served locally on LM Studio's Splash engine (4-bit). This skill is **reference material for when the user asks
+Four local coding models can be served on Apple Silicon (oMLX v0.8.1 + LM Studio Splash). This skill is **reference material for when the user asks
 for it** — it is not a suggestion to use it.
 
 ## Routing policy (the important part)
@@ -13,7 +13,7 @@ for it** — it is not a suggestion to use it.
 **Never send work to the local model unless the user explicitly asked in the
 current request.** This setup exists for deliberate experimentation with local
 models. The user pays for a Claude subscription and expects that quality by
-default; silently substituting a 27B local model degrades their real work.
+default; silently substituting a local model degrades their real work.
 
 Concretely:
 
@@ -23,14 +23,16 @@ Concretely:
 - The `local-qwen` subagent and the `qwen` CLI are opt-in tools, not defaults.
 
 Explicit triggers look like: "ask qwen…", "use the local model", "run this
-locally", "use local-qwen", "test this on the 27B".
+locally", "use local-qwen", "test this on ornith/inkling2/qwen".
 
-## The model
+## The models (default `--think xhigh`)
 
-One model: `splash4` (Qwen 3.8 27B, 4-bit + DFlash2 drafter on LM Studio Splash).
-~35–84 tok/s decode, warm follow-ups in 1–2 s, ~17 GB mapped. Start it with
-`llm-serve start`; check with `llm-serve which`. From a shell,
-`claude local qwen38_27 --think xhigh|medium|low` sets reasoning effort (default xhigh).
+- **`ornith35` (default):** `Ornith-1.5-35B-A3B-oQ4e-mtp` on `oMLX v0.8.1` — fastest overall (`~87–104 tok/s`, `0.61s` warm follow-ups, `5/5` Tier 4 + `8/8` deep recall). Launch: `claude local ornith` or `llm-serve start ornith35`.
+- **`inkling2`:** Thinking Machines `Inkling-2-Mini-oQ3e-mtp` on `oMLX v0.8.1` + DSpark (`MLX_ENABLE_TF32=0`, `ctx 131072`) — `5/5` Tier 4 + `8/8` deep recall at `~66 tok/s`. Launch: `claude local inkling2`.
+- **`daisyrose27`:** `DaisyRose-27B-oQ4e-mtp` (pure-RL Qwen 3.8 27B) on `oMLX v0.8.1` (`ctx 131072`) — `5/5` Tier 4 (`0` timeouts). Launch: `claude local daisyrose`.
+- **`splash4`:** `incoai/Qwen3.8-27B-Splash` (4-bit + DFlash2) on LM Studio Splash — legacy fast baseline (`~44–74 tok/s`, `1.0s` warm). Launch: `claude local qwen38_27`.
+
+Start any model with `llm-serve start <alias>`; check with `llm-serve which`. `--think` sets reasoning effort (default `xhigh`).
 
 ## The three ways in
 

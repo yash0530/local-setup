@@ -1,7 +1,7 @@
 {
   "name": "local-llm",
   "version": "1.0.0",
-  "description": "Opt-in access to the locally-served Qwen 3.8 27B model (LM Studio Splash, 4-bit). Bundles the `local-qwen` delegation subagent and the `local-llm` reference skill. Deliberately NOT installed into ~/.claude — it is loaded per-session via `claude subagent` so a plain `claude` never sees it.",
+  "description": "Opt-in access to the locally-served coding models on Apple Silicon (Ornith-1.5-35B-A3B, Inkling-2-Mini oQ3e, DaisyRose-27B via oMLX, plus Qwen 3.8 27B Splash4 via LM Studio). Bundles the `local-qwen` delegation subagent and the `local-llm` reference skill. Deliberately NOT installed into ~/.claude — it is loaded per-session via `claude subagent` so a plain `claude` never sees it.",
   "author": {
     "name": "yash0530"
   }
