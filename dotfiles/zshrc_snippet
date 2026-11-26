@@ -108,6 +108,9 @@ alias claude_ox_alpha="openrouter-code --model stealth/ox-alpha"
 alias sleep_no="sudo pmset -a disablesleep 1"
 alias sleep_ok="sudo pmset -a disablesleep 0"
 
+# Launch latest NFSMW: Rockport 2026 modded ISO in PCSX2
+alias nfsmw='open -a /Applications/PCSX2-v2.6.3.app --args -- "$HOME/Desktop/Games/NFSMW/build/NFSMW_latest.iso"'
+
 # Kiro's post block must stay last in ~/.zshrc; if installing this snippet after Kiro,
 # move this line back to the bottom:
 #   [[ -f "${HOME}/Library/Application Support/kiro-cli/shell/zshrc.post.zsh" ]] && builtin source "${HOME}/Library/Application Support/kiro-cli/shell/zshrc.post.zsh"
