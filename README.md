@@ -42,6 +42,7 @@ kiro-cli login
 `setup.sh` configures everything. It will:
 - Back up your existing `~/.claude/` configuration.
 - Install the custom Claude plugins: `agy` (Antigravity) and `kiro` (Kiro CLI).
+- Install global Antigravity (`~/.gemini/config/`) skills and rules from `antigravity/` (e.g., `claude-code` skill, `sync-local-setup` rule).
 - Copy `settings.json` (skips permission alerts and enables plugins) and
   `statusline-command.sh` (the status line `settings.json` points at).
 - Symlink the **local LLM stack** (`llm-serve`, `llm-proxy.mjs`, `qwen`, `qwen-cli`,

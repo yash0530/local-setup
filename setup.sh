@@ -58,6 +58,19 @@ if [ -d "$REPO_DIR/claude_plugins/plugins/local-llm" ]; then
   cp -R "$REPO_DIR/claude_plugins/plugins/local-llm" "$CLAUDE_DIR/local-plugins/"
 fi
 
+# 3b. Install global Antigravity (~/.gemini/config) skills and rules
+GEMINI_CONFIG_DIR="$HOME/.gemini/config"
+if [ -d "$REPO_DIR/antigravity" ]; then
+  echo "Installing Antigravity skills and rules to $GEMINI_CONFIG_DIR..."
+  mkdir -p "$GEMINI_CONFIG_DIR/skills" "$GEMINI_CONFIG_DIR/rules"
+  if [ -d "$REPO_DIR/antigravity/skills" ] && [ "$(ls -A "$REPO_DIR/antigravity/skills")" ]; then
+    cp -R "$REPO_DIR/antigravity/skills/"* "$GEMINI_CONFIG_DIR/skills/"
+  fi
+  if [ -d "$REPO_DIR/antigravity/rules" ] && [ "$(ls -A "$REPO_DIR/antigravity/rules")" ]; then
+    cp -R "$REPO_DIR/antigravity/rules/"* "$GEMINI_CONFIG_DIR/rules/"
+  fi
+fi
+
 # 4. Copy the Auto-Resume Daemon script, install CLI, and configure via launchd
 echo "Installing Claude Auto-Resume Daemon..."
 cp "$REPO_DIR/scripts/claude_resume_daemon.py" "$CLAUDE_DIR/claude_resume_daemon.py"
